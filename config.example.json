@@ -1,0 +1,10 @@
+{
+    "imageSource": "\\\\RECORDING-SERVER\\SharedFolder",
+    "processingLocation": "C:\\path\\to\\processing",
+    "backupLocation": "C:\\path\\to\\backup",
+    "file_pattern": "*.mp4",
+    "stability_period_sec": 15,
+    "check_interval_sec": 5,
+    "scan_interval_sec": 30,
+    "min_file_size": 10
+}

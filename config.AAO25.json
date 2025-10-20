@@ -1,0 +1,10 @@
+{
+    "imageSource": "/Volumes/Captures/AAO_RAW",
+    "processingLocation": "/Users/joemc3/tmp/aao_25/raw",
+    "backupLocation": "/Volumes/[E] Windows 11/DA_Captures/AAO_25/raw",
+    "file_pattern": "*.mp4",
+    "stability_period_sec": 180,
+    "check_interval_sec": 90,
+    "scan_interval_sec": 60,
+    "min_file_size": 50
+}

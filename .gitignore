@@ -36,7 +36,10 @@ ENV/
 
 # Project specific - configuration files with actual paths
 config.json
-config.*.json
+
+# Allow specific example/template config files
+!config.example.json
+!config.AAO25.json
 
 # Logs
 *.log
