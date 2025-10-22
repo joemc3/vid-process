@@ -194,8 +194,7 @@ def wait_for_stable_file_size(
 
         # Check if file meets minimum size requirement
         if current_size < min_file_size_bytes:
-            if last_size is None or current_size != last_size:
-                logger.info(f"File too small: {current_size_mb:.2f} MB (min: {min_file_size_mb} MB). Waiting...")
+            logger.info(f"File too small: {current_size_mb:.2f} MB (min: {min_file_size_mb} MB). Waiting...")
             first_stable_time = None  # Reset stability timer
             last_size = current_size
             time.sleep(check_interval_sec)
