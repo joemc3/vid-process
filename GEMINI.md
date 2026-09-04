@@ -1,52 +1,40 @@
-# Project Overview
+# GEMINI.md
 
-This project is a Python script that monitors a network share for video files being written by ffmpeg. It detects when a recording is complete by monitoring file size stability, and then automatically copies the completed files to both a processing and a backup location.
+**See `README.md` for the operator guide and `CLAUDE.md` for full agent guidance.** This file is a
+pointer so that agents loading only `GEMINI.md` are not misled by stale content.
 
-The script is configured using a `config.json` file, which is created with default values on the first run if it doesn't exist.
+## Project overview
 
-**Key Technologies:**
-*   Python 3.6+ (uses only the standard library)
+`vidproc` finds where a recorded conference session actually starts and ends, so a raw capture can
+be trimmed without a human scrubbing through it. It proposes a start timecode, an end timecode, a
+confidence classification for each, and the transcript around both cuts as evidence. Rendering,
+copying, and uploading remain manual.
 
-**Architecture:**
-*   A single Python script (`video_monitor.py`) runs in a continuous loop.
-*   It scans a source directory for new files based on a configurable file pattern.
-*   For each new file, it monitors the file size. A file is considered "complete" when its size has not changed for a specified duration and it exceeds a minimum size.
-*   Once a file is deemed complete, it is copied to two separate destination directories.
-*   The script is designed to be resilient to network errors and can be run as a background service.
+The end cut is found by audio energy alone and needs no model. The start cut is harder — the first
+speech is often a mic check or an apology for technical difficulties — so an energy pass gives a
+conservative lower bound and an optional language model refines it against a transcript.
 
-# Building and Running
+`video_monitor.py` is a separate legacy file-copy monitor, not yet migrated, with an unrelated
+`config.json` schema.
 
-**Prerequisites:**
-*   Python 3.6 or higher
+## Technologies
 
-**Running the script:**
+Python 3.11+, numpy, httpx, pytest, managed with `uv`. External binaries: `ffmpeg`, `ffprobe`,
+`whisper-cli` (whisper.cpp). Optionally Ollama (local) or OpenRouter (remote) for refinement.
 
-1.  **Initial Setup:**
-    *   Run the script once to generate the default `config.json` file:
-        ```bash
-        python video_monitor.py
-        ```
-2.  **Configuration:**
-    *   Edit the `config.json` file to specify the `imageSource` (network share), `processingLocation`, `backupLocation`, and other settings.
-3.  **Start Monitoring:**
-    *   Run the script again to start the monitoring process:
-        ```bash
-        python video_monitor.py
-        ```
+## Building and running
 
-The script will run continuously and log its activities to the console.
+```bash
+uv sync
+uv run vidproc <file> -c config.json -w working
+uv run pytest
+```
 
-**Testing:**
-There are no automated tests in this project. To test, you would typically:
-1.  Configure the `config.json` to point to test directories.
-2.  Run the script.
-3.  Copy a file into the `imageSource` directory to simulate a recording being written.
-4.  Observe the console output to verify that the script detects the file, waits for it to be "stable", and then copies it to the configured destinations.
+## Hard constraints
 
-# Development Conventions
-
-*   **Configuration:** All configuration is externalized to a `config.json` file. Default values are provided in the script itself.
-*   **Logging:** The script uses the standard Python `logging` module to provide detailed information about its operations, including file detection, stability checks, and copy operations.
-*   **Error Handling:** The script includes error handling for common issues like network share access problems and file I/O errors.
-*   **Code Style:** The code is well-commented and follows standard Python conventions.
-
+- Never commit, push, or upload anything under `sample/` or `working/` — real recordings of
+  identifiable presenters, and audio and transcripts derived from them. Both are gitignored.
+- Remote LLM access goes through OpenRouter only.
+- Never assume a source property — probe it. These captures are 16 fps.
+- Detection thresholds and the ground truth in `tests/test_regression_samples.py` were measured
+  against real footage. Do not loosen them to make a test pass.

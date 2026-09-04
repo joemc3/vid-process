@@ -1,57 +1,109 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Project Overview
+**Read `README.md` first** — it is the operator guide and the source of truth for prerequisites,
+setup, usage, and known limitations. This file covers only what an agent needs beyond that.
 
-This is a video file monitoring system designed for a multi-server setup where:
-- **Recording Server**: Runs ffmpeg to record streams and writes files to a network share
-- **Processing Server**: Monitors the network share, detects when recordings are complete, and copies them to processing and backup locations
+## What this repo contains
+
+Two separate tools at different stages of maturity.
+
+**`vidproc`** (`src/vidproc/`) — the active project. Given a raw conference recording it proposes
+a start and end timecode, a confidence classification for each, and the transcript around both
+cuts as evidence. This replaces the manual VLC-scrubbing step of a larger post-production
+workflow.
+
+**`video_monitor.py`** — a legacy standalone script that watches a capture share and copies
+finished recordings off it. Still in use, not yet migrated, and it has known defects (an unbounded
+hang when a file stalls below the minimum size, and single-file blocking that stops the whole
+queue). Its `config.json` schema is **unrelated** to vidproc's. Don't conflate the two.
+
+## Hard constraints
+
+These are not style preferences. Violating them causes real harm.
+
+- **`sample/` and `working/` must never be committed, pushed, or uploaded anywhere.** `sample/`
+  holds real conference recordings of identifiable presenters discussing clinical work, kept for
+  regression testing. `working/` fills with decoded audio and transcript excerpts derived from it.
+  Both are gitignored — keep it that way. Committed fixtures are derived values only: timecodes,
+  transcripts, envelopes. Never media.
+- **Remote LLM access goes through OpenRouter only**, never a provider API directly.
+- **A model listed by `ollama list` with a `:cloud` suffix is not local** — it runs on Ollama's
+  servers. Never treat one as satisfying "nothing leaves the machine".
+- **Never assume a source property — probe it.** These captures are 16 fps, which is unusual. A
+  hand-written pipeline previously assumed 29.97 and silently inflated every output by 87% more
+  frames.
 
 ## Architecture
 
-The system uses a file size stability detection approach to determine when ffmpeg has finished writing a video file. The core workflow is:
+A pure-function core wrapped by thin adapters over external tools.
 
-1. **File Discovery**: Compare files in `imageSource` (network share) against `processingLocation` to identify new recordings
-2. **Stability Monitoring**: Monitor file size at regular intervals until it stops changing for a configured period
-3. **Multi-destination Copy**: Once stable, copy the completed file to both `processingLocation` and `backupLocation`
-4. **Continuous Loop**: Repeat the scan-detect-copy cycle indefinitely
-
-## Running the Monitor
-
-```bash
-python video_monitor.py
+```
+probe.py    ffprobe wrapper — real source properties, never assumed
+audio.py    RMS envelope, fixed 8 kHz / 0.25 s, content-addressed PCM cache
+detect.py   PURE. Boundary detection over an envelope. No I/O at all.
+asr.py      ASR protocol + whisper.cpp adapter. Bounded windows only.
+refine.py   Refiner protocol + none/local/openrouter backends
+confidence.py  PURE. Scores each boundary against measured thresholds.
+analyze.py  Wires the above into one proposal
+cli.py      Entry point, writes proposal.json
 ```
 
-The script runs continuously until stopped with Ctrl+C.
+`detect.py` and `confidence.py` do no I/O by design — that is what lets them be tested against
+synthesised envelopes with no media files. Keep it that way; it is not incidental.
 
-## Configuration
+`ASR` and `Refiner` are real seams, injected into `analyze()` and faked in tests, so a different
+engine can be swapped in without touching detection logic.
 
-All configuration is in `config.json` (or the `DEFAULT_CONFIG` dictionary in `video_monitor.py`):
+## Numbers you must not casually change
 
-- **Paths**: Set `imageSource` (UNC path to network share), `processingLocation`, and `backupLocation`
-- **File Pattern**: Use `file_pattern` to filter file types (supports glob patterns like `*.mp4`, `recording_*.mkv`)
-- **File Size**: Set `min_file_size` (in MB) to specify the minimum file size required for processing (default: 10 MB)
-- **Timing Parameters**:
-  - `stability_period_sec`: How long file size must remain unchanged (default: 15 seconds)
-  - `check_interval_sec`: Frequency of file size checks during monitoring (default: 5 seconds)
-  - `scan_interval_sec`: How often to scan for new files (default: 30 seconds)
+Every threshold in this project was measured against three real sessions whose hand-made cut
+points are known. They are not guesses, and "tidying" them silently breaks the detector.
 
-## Key Design Decisions
+- Envelope resolution 8000 Hz / 0.25 s — every threshold is calibrated to these.
+- `min_tail_silence_s` capped at 20.0 — one session's recording stopped 27 s after it ended.
+- Confidence thresholds: gap ≤ 10.0 s, pre-head silence ≥ 5.0 s, tail silence ≥ 20.0 s.
+- The ground truth and tolerances in `tests/test_regression_samples.py`. If a change makes that
+  file fail, the change is wrong — do not loosen the bounds to make it pass.
 
-- **Dual Requirements for Processing**: Files must meet BOTH conditions before processing:
-  1. File size must be greater than `min_file_size` (in MB)
-  2. File size must remain stable (unchanged) for `stability_period_sec`
+The head candidate must always be a **conservative lower bound**: earlier than the true cut is
+correct and expected, later is a defect.
 
-  This prevents processing of incomplete recordings or test files that are too small.
+## Commands
 
-- **Byte-Level Stability Detection**: File stability is determined by comparing exact file sizes in bytes (not rounded MB). The file size must remain at exactly the same byte count for the entire `stability_period_sec` duration. Uses wall-clock time (`time.time()`) rather than counting check intervals to ensure accurate stability duration regardless of system load or timing variations.
+```bash
+uv sync                            # set up
+uv run pytest                      # full suite (needs sample/ for 9 of them)
+uv run pytest -m "not samples"     # suite without real footage — must also pass
+uv run ruff check                  # lint
+uv run vidproc <file> -c cfg.json -w working
+```
 
-- **Size-based Stability**: Files are considered "complete" when their size hasn't changed for `stability_period_sec`. This is more reliable than file locking mechanisms across network shares.
-- **Comparison-based Discovery**: New files are detected by comparing source and processing directories, avoiding duplicate processing of already-copied files.
-- **Automatic Directory Creation**: Destination directories are created automatically if they don't exist.
-- **Error Resilience**: File access errors (common with network shares) are caught and retried rather than crashing the monitor.
+## Conventions
 
-## Reference Documentation
+- Python 3.11+, `from __future__ import annotations` at the top of every module.
+- Errors from external tools surface as `vidproc.errors.ExternalToolError`, never a raw
+  `KeyError`, `JSONDecodeError`, `ZeroDivisionError`, or `OSError`.
+- Refinement must never raise. If a model is unreachable it returns the energy candidate with
+  `available=False` and the session is flagged for review. A session is never failed because a
+  model was unavailable.
+- Never hand the transcriber a window the energy pass has not identified as containing speech.
+  Whisper's documented failure mode is hallucinating during non-speech, and these recordings open
+  with 5–16 minutes of it.
 
-See `filecheck.md` for the original design requirements and explanation of the file stability monitoring approach.
+## Design documents
+
+- `docs/superpowers/specs/2026-09-04-session-trim-pipeline-design.md` — the binding design, with
+  the measured evidence behind every number and a list of stated assumptions.
+- `docs/superpowers/plans/2026-09-04-detection.md` — the implementation plan for what is built.
+
+## Known gaps
+
+Documented in README under *Known limitations*, plus:
+
+- No external call has a timeout — four subprocess invocations. Fix them in one consistent pass.
+- No `test_cli.py`.
+- `words_to_lines` splits on pauses only, not sentence boundaries, which can merge a mic check
+  into the same line as the session opening and make the correct cut point unselectable. This is
+  the highest-value known improvement.
