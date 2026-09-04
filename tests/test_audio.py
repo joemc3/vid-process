@@ -11,6 +11,7 @@ from vidproc.audio import (
     ENVELOPE_HOP_S,
     ENVELOPE_SAMPLE_RATE,
     Envelope,
+    _cache_key,
     envelope_for,
     envelope_from_pcm,
 )
@@ -78,4 +79,26 @@ def test_envelope_for_media_and_cache(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     env = envelope_for(media, cache)
     assert env.duration_s == pytest.approx(6.0, abs=0.5)
-    assert (cache / "m.pcm").exists()
+    assert len(list(cache.glob("m-*.pcm"))) == 1
+
+
+def test_cache_key_distinguishes_same_stem_different_files(tmp_path: Path) -> None:
+    """sample/raw/X.mp4 and sample/processed/X.mp4 share a stem, and the cache
+    directory is shared across sessions — a stem-only key would collide."""
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "processed").mkdir()
+    a = tmp_path / "raw" / "sess.mp4"
+    a.write_bytes(b"x" * 100)
+    b = tmp_path / "processed" / "sess.mp4"
+    b.write_bytes(b"y" * 200)
+    assert _cache_key(a) != _cache_key(b)
+
+
+def test_cache_key_changes_when_the_source_changes(tmp_path: Path) -> None:
+    """A re-copied or re-recorded capture reuses its filename; it must not
+    reuse the previous envelope."""
+    p = tmp_path / "sess.mp4"
+    p.write_bytes(b"x" * 100)
+    first = _cache_key(p)
+    p.write_bytes(b"y" * 250)
+    assert _cache_key(p) != first

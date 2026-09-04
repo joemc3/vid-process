@@ -73,6 +73,20 @@ def envelope_from_pcm(
     return Envelope(db=20.0 * np.log10(rms + _EPSILON), hop_s=hop_s)
 
 
+def _cache_key(media: Path) -> str:
+    """Cache key that changes whenever the source does.
+
+    The stem alone is not enough, and the cache directory is shared across
+    every session. This project's own layout puts raw/<session>.mp4 and
+    processed/<session>.mp4 side by side with identical stems, and a re-copied
+    or re-recorded capture reuses its name. Either would silently serve the
+    wrong envelope — and since every detection threshold is computed from it,
+    the result would be confidently wrong with nothing failing.
+    """
+    stat = media.stat()
+    return f"{media.stem}-{stat.st_size}-{int(stat.st_mtime)}"
+
+
 def envelope_for(
     media: Path,
     cache_dir: Path,
@@ -80,9 +94,9 @@ def envelope_for(
     hop_s: float = ENVELOPE_HOP_S,
     ffmpeg: str = "ffmpeg",
 ) -> Envelope:
-    """Envelope for a media file, caching the intermediate PCM beside it."""
+    """Envelope for a media file, caching the intermediate PCM."""
     media = Path(media)
-    pcm = Path(cache_dir) / f"{media.stem}.pcm"
+    pcm = Path(cache_dir) / f"{_cache_key(media)}.pcm"
     if not pcm.exists():
         extract_pcm(media, pcm, sample_rate=sample_rate, ffmpeg=ffmpeg)
     return envelope_from_pcm(pcm, sample_rate=sample_rate, hop_s=hop_s)
