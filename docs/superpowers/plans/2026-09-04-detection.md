@@ -400,6 +400,34 @@ def test_fps_is_never_assumed() -> None:
     assert parse_probe_json(payload, Path("x.mp4")).fps == Fraction(30000, 1001)
 
 
+def test_zero_frame_rate_surfaces_as_external_tool_error() -> None:
+    """ffprobe emits r_frame_rate "0/0" in practice - it does so for the audio
+    stream of every sample file - and Fraction("0/0") raises ZeroDivisionError,
+    which is not a ValueError and so needs naming explicitly."""
+    payload = {
+        "format": {"duration": "10"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1920,
+             "height": 1080, "r_frame_rate": "0/0"},
+            {"codec_type": "audio", "sample_rate": "44100", "channels": 2},
+        ],
+    }
+    with pytest.raises(ExternalToolError, match="unusable stream properties"):
+        parse_probe_json(payload, Path("x.mp4"))
+
+
+def test_missing_stream_field_surfaces_as_external_tool_error() -> None:
+    payload = {
+        "format": {"duration": "10"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "r_frame_rate": "16/1"},
+            {"codec_type": "audio", "sample_rate": "44100", "channels": 2},
+        ],
+    }
+    with pytest.raises(ExternalToolError, match="unusable stream properties"):
+        parse_probe_json(payload, Path("x.mp4"))
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="ffmpeg not installed")
 def test_probe_real_file(tmp_path: Path) -> None:
     media = tmp_path / "gen.mp4"
@@ -471,17 +499,23 @@ def parse_probe_json(payload: dict[str, Any], path: Path) -> MediaInfo:
     except (KeyError, TypeError, ValueError) as exc:
         raise ExternalToolError(f"no usable duration in {path}") from exc
 
-    return MediaInfo(
-        path=path,
-        duration_s=duration,
-        width=int(video["width"]),
-        height=int(video["height"]),
-        # Always read the real rate. Never assume 16 fps.
-        fps=Fraction(video["r_frame_rate"]),
-        video_codec=str(video.get("codec_name", "")),
-        audio_sample_rate=int(audio["sample_rate"]),
-        audio_channels=int(audio["channels"]),
-    )
+    try:
+        return MediaInfo(
+            path=path,
+            duration_s=duration,
+            width=int(video["width"]),
+            height=int(video["height"]),
+            # Always read the real rate. Never assume 16 fps.
+            fps=Fraction(video["r_frame_rate"]),
+            video_codec=str(video.get("codec_name", "")),
+            audio_sample_rate=int(audio["sample_rate"]),
+            audio_channels=int(audio["channels"]),
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        # ffprobe really does emit r_frame_rate "0/0" — it does so for the audio
+        # stream of every sample file, and for video on some VFR sources — and
+        # Fraction("0/0") is a ZeroDivisionError, which is not a ValueError.
+        raise ExternalToolError(f"unusable stream properties in {path}: {exc}") from exc
 
 
 def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
@@ -499,13 +533,17 @@ def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
     except subprocess.CalledProcessError as exc:
         raise ExternalToolError(f"ffprobe failed on {path}: {exc.stderr.strip()}") from exc
 
-    return parse_probe_json(json.loads(result.stdout), path)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ExternalToolError(f"ffprobe returned unparseable JSON for {path}: {exc}") from exc
+    return parse_probe_json(payload, path)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_probe.py -v`
-Expected: 5 passed
+Expected: 7 passed
 
 - [ ] **Step 5: Commit**
 
@@ -544,6 +582,7 @@ from vidproc.audio import (
     ENVELOPE_HOP_S,
     ENVELOPE_SAMPLE_RATE,
     Envelope,
+    _cache_key,
     envelope_for,
     envelope_from_pcm,
 )
@@ -611,7 +650,29 @@ def test_envelope_for_media_and_cache(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     env = envelope_for(media, cache)
     assert env.duration_s == pytest.approx(6.0, abs=0.5)
-    assert (cache / "m.pcm").exists()
+    assert len(list(cache.glob("m-*.pcm"))) == 1
+
+
+def test_cache_key_distinguishes_same_stem_different_files(tmp_path: Path) -> None:
+    """sample/raw/X.mp4 and sample/processed/X.mp4 share a stem, and the cache
+    directory is shared across sessions — a stem-only key would collide."""
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "processed").mkdir()
+    a = tmp_path / "raw" / "sess.mp4"
+    a.write_bytes(b"x" * 100)
+    b = tmp_path / "processed" / "sess.mp4"
+    b.write_bytes(b"y" * 200)
+    assert _cache_key(a) != _cache_key(b)
+
+
+def test_cache_key_changes_when_the_source_changes(tmp_path: Path) -> None:
+    """A re-copied or re-recorded capture reuses its filename; it must not
+    reuse the previous envelope."""
+    p = tmp_path / "sess.mp4"
+    p.write_bytes(b"x" * 100)
+    first = _cache_key(p)
+    p.write_bytes(b"y" * 250)
+    assert _cache_key(p) != first
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -699,6 +760,20 @@ def envelope_from_pcm(
     return Envelope(db=20.0 * np.log10(rms + _EPSILON), hop_s=hop_s)
 
 
+def _cache_key(media: Path) -> str:
+    """Cache key that changes whenever the source does.
+
+    The stem alone is not enough, and the cache directory is shared across
+    every session. This project's own layout puts raw/<session>.mp4 and
+    processed/<session>.mp4 side by side with identical stems, and a re-copied
+    or re-recorded capture reuses its name. Either would silently serve the
+    wrong envelope — and since every detection threshold is computed from it,
+    the result would be confidently wrong with nothing failing.
+    """
+    stat = media.stat()
+    return f"{media.stem}-{stat.st_size}-{int(stat.st_mtime)}"
+
+
 def envelope_for(
     media: Path,
     cache_dir: Path,
@@ -706,9 +781,9 @@ def envelope_for(
     hop_s: float = ENVELOPE_HOP_S,
     ffmpeg: str = "ffmpeg",
 ) -> Envelope:
-    """Envelope for a media file, caching the intermediate PCM beside it."""
+    """Envelope for a media file, caching the intermediate PCM."""
     media = Path(media)
-    pcm = Path(cache_dir) / f"{media.stem}.pcm"
+    pcm = Path(cache_dir) / f"{_cache_key(media)}.pcm"
     if not pcm.exists():
         extract_pcm(media, pcm, sample_rate=sample_rate, ffmpeg=ffmpeg)
     return envelope_from_pcm(pcm, sample_rate=sample_rate, hop_s=hop_s)
@@ -717,7 +792,7 @@ def envelope_for(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_audio.py -v`
-Expected: 5 passed
+Expected: 7 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1041,6 +1116,15 @@ def test_parse_empty_transcription_is_empty_list() -> None:
     assert parse_whisper_json({"transcription": []}, 0.0) == []
 
 
+def test_malformed_segment_surfaces_as_external_tool_error() -> None:
+    """A segment with text but no offsets is unusable output from an external
+    tool, and must not escape as a raw KeyError."""
+    from vidproc.errors import ExternalToolError
+
+    with pytest.raises(ExternalToolError, match="unusable whisper segment"):
+        parse_whisper_json({"transcription": [{"text": " Hello"}]}, 0.0)
+
+
 def test_words_to_lines_splits_on_long_pause() -> None:
     words = [
         Word("Hello", 0.0, 0.4),
@@ -1125,14 +1209,15 @@ def parse_whisper_json(payload: dict[str, Any], offset_s: float) -> list[Word]:
         text = str(segment.get("text", "")).strip()
         if not text:
             continue
-        offsets = segment.get("offsets", {})
-        words.append(
-            Word(
-                text=text,
-                start_s=offset_s + float(offsets["from"]) / 1000.0,
-                end_s=offset_s + float(offsets["to"]) / 1000.0,
-            )
-        )
+        try:
+            offsets = segment["offsets"]
+            start_s = offset_s + float(offsets["from"]) / 1000.0
+            end_s = offset_s + float(offsets["to"]) / 1000.0
+        except (KeyError, TypeError, ValueError) as exc:
+            # Same contract as probe.py: an external tool's malformed output
+            # surfaces as ExternalToolError, never a raw KeyError.
+            raise ExternalToolError(f"unusable whisper segment {segment!r}") from exc
+        words.append(Word(text=text, start_s=start_s, end_s=end_s))
     return words
 
 
@@ -1184,7 +1269,11 @@ class WhisperCppASR:
             self._extract(media, wav, start_s, end_s)
             stem = tmpdir / "out"
             self._run_whisper(wav, stem)
-            payload = json.loads((stem.with_suffix(".json")).read_text())
+            raw = (stem.with_suffix(".json")).read_text()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ExternalToolError(f"whisper-cli returned unparseable JSON: {exc}") from exc
         return parse_whisper_json(payload, offset_s=start_s)
 
     def _extract(self, media: Path, wav: Path, start_s: float, end_s: float) -> None:
@@ -1223,7 +1312,7 @@ class WhisperCppASR:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_asr.py -v`
-Expected: 7 passed
+Expected: 8 passed
 
 - [ ] **Step 5: Commit**
 
