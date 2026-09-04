@@ -38,9 +38,8 @@ uv run vidproc sample/raw/AAO2025PT12.mp4 --working-dir working
 uv run vidproc sample/raw/AAO2025PT12.mp4 --json      # machine-readable
 ```
 
-The proposal is written to `<working-dir>/<session>/proposal.json`. The terminal output ends
-with a ready-to-paste `-ss` / `-to` pair, and marks either boundary `REVIEW` when confidence
-is low.
+The proposal is written to `<working-dir>/<session>/proposal.json`. The terminal output includes a
+ready-to-paste `-ss` / `-to` pair, and marks either boundary `REVIEW` when confidence is low.
 
 ## Configuration
 
@@ -58,7 +57,7 @@ Pass a JSON file with `-c`. Any key may be omitted; defaults are shown.
     "head_preroll_s": 1.0,
     "tail_pad_s": 2.0
   },
-  "refiner": { "mode": "none", "model": "", "base_url": "", "api_key_env": "OPENROUTER_API_KEY" },
+  "refiner": { "mode": "none", "model": "", "base_url": "", "api_key_env": "OPENROUTER_API_KEY", "timeout_s": 60.0 },
   "asr": { "binary": "whisper-cli", "model_path": "", "language": "en" }
 }
 ```
