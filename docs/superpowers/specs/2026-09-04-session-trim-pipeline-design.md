@@ -114,7 +114,7 @@ The three head cuts, read as content rather than signal:
 
 | Session | Skipped | Started on |
 | --- | --- | --- |
-| PT01 | "Sorry, we're having a little technical difficulty", housekeeping, "Hello?" mic test | "Good morning, everyone. My name is Alex Rivera." |
+| PT01 | "Sorry, we're having a little technical difficulty", housekeeping, "Hello?" mic test | "Good morning, everyone. My name is..." (the first presenter) |
 | PT06 | "Hello, everybody, oh yeah, I'm pretty loud, okay" | "Welcome to this session on podium posters." |
 | PT12 | nothing | "[All right,] good morning everyone." |
 

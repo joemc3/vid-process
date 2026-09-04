@@ -13,6 +13,8 @@ from vidproc.refine import (
     format_lines,
 )
 
+# Transcript fixtures modelled on a real session. Names are placeholders —
+# no real presenter is named anywhere in this repository.
 PT01 = [
     Line("Sorry, we're having a little technical difficulty.", 900.0, 910.0),
     Line("I'll just remind the audience that this session is being recorded.", 910.0, 916.0),

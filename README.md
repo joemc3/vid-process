@@ -10,7 +10,7 @@ confident it is in each, and the transcript around both cuts so you can check it
 AAO2025PT12  (56m14.5s raw)
   start     288.50s  4m48.5s   ok
            - energy and model agree within 0.0s
-           opens on: "All right. Good morning, everyone. My name is Alex Rivera..."
+           opens on: "All right. Good morning, everyone. My name is..."
   end      3186.75s  53m06.8s   ok
            - final silence 189.5s
            - closing language found near the end
@@ -68,8 +68,8 @@ curl -L -o ~/models/ggml-base.en.bin \
 That is **144 MB**, and it is enough. On the three 2025 sessions it produced *identical* cut
 points to the 3.1 GB model, in about a third of the time. It reliably transcribes the things that
 matter here — "good morning", "welcome to this session", "I'm pretty loud, okay" — even though it
-mangles proper nouns, rendering *Alex Rivera* as "Alex Rivera" and *poster theater* as "social
-theater". Wrong names don't change where the cut goes.
+mangles proper nouns — it turned one presenter's name into a different name entirely, and *poster
+theater* into "social theater". Wrong names don't change where the cut goes.
 
 If you want transcripts accurate enough to reuse for anything else, get the large model instead —
 but it is **3.1 GB**, so don't pull it over conference wifi on the morning of an event:
