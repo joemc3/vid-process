@@ -98,6 +98,16 @@ def test_out_of_range_index_from_model_degrades_to_candidate() -> None:
     assert _refiner(handler).refine(PT01, candidate_s=900.0).available is False
 
 
+def test_empty_choices_list_degrades_to_candidate() -> None:
+    """A 200 response carrying no choices must degrade, not raise. IndexError is
+    a LookupError, not a KeyError, so catching KeyError alone misses it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    assert _refiner(handler).refine(PT01, candidate_s=900.0).available is False
+
+
 def test_empty_lines_returns_candidate_without_calling_model() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("model must not be called with no transcript")

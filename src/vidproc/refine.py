@@ -137,7 +137,11 @@ class OpenAICompatibleRefiner:
             )
         except httpx.HTTPError as exc:
             return _degraded(candidate_s, f"refiner unreachable: {type(exc).__name__}")
-        except (KeyError, ValueError, TypeError) as exc:
+        except (LookupError, ValueError, TypeError) as exc:
+            # LookupError, not KeyError: a 200 response carrying {"choices": []}
+            # raises IndexError on choices[0], and IndexError is a LookupError.
+            # Catching KeyError alone lets it escape and breaks the guarantee
+            # that refinement never fails a session.
             return _degraded(candidate_s, f"refiner returned unusable output: {exc}")
         finally:
             if self._client is None:
