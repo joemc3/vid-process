@@ -2004,6 +2004,37 @@ def test_start_never_goes_negative(tmp_path, fake_probe, monkeypatch) -> None:
     assert p.start_s >= 0.0
 
 
+def test_tail_window_stays_bounded_on_a_short_file(tmp_path, monkeypatch) -> None:
+    """A file shorter than tail_window_s still yields a bounded tail window.
+
+    final_silence_start returns the full duration when there is no adequate
+    trailing silence, so end_s can be small. The window must stay non-negative
+    and never exceed tail_window_s of audio.
+    """
+    from fractions import Fraction
+
+    from vidproc.probe import MediaInfo
+
+    hop = 0.25
+    db = np.full(int(30 / hop), 35.0)  # 30s, all speech, no trailing silence
+    monkeypatch.setattr(
+        "vidproc.analyze.envelope_for", lambda *a, **k: Envelope(db=db, hop_s=hop)
+    )
+    monkeypatch.setattr(
+        "vidproc.analyze.probe",
+        lambda p, **k: MediaInfo(
+            path=p, duration_s=30.0, width=1920, height=1080, fps=Fraction(16, 1),
+            video_codec="h264", audio_sample_rate=44100, audio_channels=2,
+        ),
+    )
+    asr = FakeASR([])
+    cfg = make_config(tmp_path)
+    analyze(tmp_path / "short.mp4", cfg, asr=asr, refiner=FakeRefiner(0.0))
+    _, tail_call = asr.calls
+    assert tail_call[0] >= 0.0
+    assert tail_call[1] - tail_call[0] <= cfg.detection.tail_window_s
+
+
 def test_proposal_json_round_trips(tmp_path, fake_envelope, fake_probe) -> None:
     p = analyze(
         tmp_path / "s.mp4", make_config(tmp_path),
@@ -2111,6 +2142,10 @@ def analyze(
     )
     head_lines = words_to_lines(head_words)
 
+    # Width is min(end_s, tail_window_s) — never more than one window. On a file
+    # shorter than a window the tail window is the whole file, which is fine:
+    # the invariant exists to stop the transcriber being handed long stretches
+    # of dead air, and a file shorter than one window cannot contain any.
     tail_start = max(0.0, bounds.end_s - d.tail_window_s)
     tail_words = asr.transcribe(media, tail_start, bounds.end_s)
     tail_lines = words_to_lines(tail_words)
@@ -2208,7 +2243,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_analyze.py -v && uv run pytest -v`
-Expected: 6 passed in test_analyze; whole suite green
+Expected: 7 passed in test_analyze; whole suite green
 
 - [ ] **Step 5: Commit**
 
