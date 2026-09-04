@@ -1442,6 +1442,16 @@ def test_out_of_range_index_from_model_degrades_to_candidate() -> None:
     assert _refiner(handler).refine(PT01, candidate_s=900.0).available is False
 
 
+def test_empty_choices_list_degrades_to_candidate() -> None:
+    """A 200 response carrying no choices must degrade, not raise. IndexError is
+    a LookupError, not a KeyError, so catching KeyError alone misses it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    assert _refiner(handler).refine(PT01, candidate_s=900.0).available is False
+
+
 def test_empty_lines_returns_candidate_without_calling_model() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("model must not be called with no transcript")
@@ -1600,7 +1610,11 @@ class OpenAICompatibleRefiner:
             )
         except httpx.HTTPError as exc:
             return _degraded(candidate_s, f"refiner unreachable: {type(exc).__name__}")
-        except (KeyError, ValueError, TypeError) as exc:
+        except (LookupError, ValueError, TypeError) as exc:
+            # LookupError, not KeyError: a 200 response carrying {"choices": []}
+            # raises IndexError on choices[0], and IndexError is a LookupError.
+            # Catching KeyError alone lets it escape and breaks the guarantee
+            # that refinement never fails a session.
             return _degraded(candidate_s, f"refiner returned unusable output: {exc}")
         finally:
             if self._client is None:
@@ -1616,7 +1630,7 @@ def build_refiner(cfg: RefinerConfig) -> Refiner:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_refine.py -v`
-Expected: 12 passed
+Expected: 13 passed
 
 - [ ] **Step 5: Commit**
 
