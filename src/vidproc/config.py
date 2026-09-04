@@ -4,10 +4,12 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from vidproc.errors import ConfigError
 
 REFINER_MODES = ("none", "local", "openrouter")
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 # Hard ceiling: PT01's recording stopped 27s after the session ended. A larger
 # requirement finds no qualifying silence and the detector returns garbage.
@@ -60,6 +62,14 @@ class RefinerConfig:
             raise ConfigError(f"refiner mode {self.mode!r} requires a model name")
         if self.timeout_s <= 0.0:
             raise ConfigError(f"timeout_s must be positive: {self.timeout_s}")
+        if self.mode == "local" and self.base_url:
+            host = urlsplit(self.base_url).hostname or ""
+            if host not in LOCAL_HOSTS:
+                raise ConfigError(
+                    f"refiner mode 'local' must not point off-machine: base_url "
+                    f"{self.base_url!r} has host {host!r}. Use mode 'openrouter' "
+                    f"for remote access."
+                )
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -96,6 +106,10 @@ class Config:
 
 
 def _merge(base: Any, overrides: dict[str, Any], label: str) -> Any:
+    if not isinstance(overrides, dict):
+        raise ConfigError(
+            f"{label} section must be an object, got {type(overrides).__name__}"
+        )
     unknown = set(overrides) - {f for f in base.__dataclass_fields__}
     if unknown:
         raise ConfigError(f"unknown {label} keys: {sorted(unknown)}")
@@ -119,5 +133,8 @@ def load_config(path: Path | None, working_dir: Path) -> Config:
         refiner=_merge(RefinerConfig(), raw.get("refiner", {}), "refiner"),
         asr=_merge(AsrConfig(), raw.get("asr", {}), "asr"),
     )
-    cfg.validate()
+    try:
+        cfg.validate()
+    except TypeError as exc:
+        raise ConfigError(f"invalid value in configuration: {exc}") from exc
     return cfg

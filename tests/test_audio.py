@@ -102,3 +102,16 @@ def test_cache_key_changes_when_the_source_changes(tmp_path: Path) -> None:
     first = _cache_key(p)
     p.write_bytes(b"y" * 250)
     assert _cache_key(p) != first
+
+
+def test_failed_extraction_leaves_no_cache_file(tmp_path: Path) -> None:
+    """A partial .pcm would be reused forever: the cache key is the SOURCE's
+    size and mtime, which do not change when extraction fails."""
+    from vidproc.audio import extract_pcm
+    from vidproc.errors import ExternalToolError
+
+    dest = tmp_path / "out.pcm"
+    with pytest.raises(ExternalToolError):
+        extract_pcm(tmp_path / "nonexistent.mp4", dest)
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.part")) == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,16 +43,29 @@ def extract_pcm(
 ) -> Path:
     """Decode the audio track to mono signed-16 PCM at sample_rate."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Write to a temp name and rename only on success. A truncated .pcm left in
+    # the cache would be reused forever — the key is the SOURCE's size+mtime,
+    # which does not change when extraction fails — and every threshold in the
+    # system is computed from the envelope it produces.
+    tmp = dest.with_name(dest.name + ".part")
     cmd = [
         ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
-        "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", str(dest),
+        "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", str(tmp),
     ]
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
     except FileNotFoundError as exc:
+        tmp.unlink(missing_ok=True)
         raise ExternalToolError(f"{ffmpeg} not found on PATH") from exc
     except subprocess.CalledProcessError as exc:
+        tmp.unlink(missing_ok=True)
         raise ExternalToolError(f"audio extraction failed for {src}: {exc.stderr.strip()}") from exc
+    except BaseException:
+        # Ctrl-C during a stalled decode is the motivating case, so this must
+        # catch BaseException, not Exception.
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, dest)
     return dest
 
 

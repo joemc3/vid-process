@@ -64,3 +64,33 @@ def test_file_overrides_merge_over_defaults(tmp_path: Path) -> None:
     assert cfg.detection.min_speech_s == 3.0  # untouched default
     assert cfg.refiner.mode == "local"
     assert cfg.refiner.model == "qwen3.6:35b-a3b"
+
+
+def test_null_section_raises_config_error(tmp_path: Path) -> None:
+    p = tmp_path / "c.json"
+    p.write_text('{"detection": null}')
+    with pytest.raises(ConfigError, match="must be an object"):
+        load_config(p, working_dir=tmp_path)
+
+
+def test_wrongly_typed_value_raises_config_error(tmp_path: Path) -> None:
+    """A hand-edited typo must produce a message, not a traceback."""
+    p = tmp_path / "c.json"
+    p.write_text('{"detection": {"gate_offset_db": "loud"}}')
+    with pytest.raises(ConfigError, match="invalid value in configuration"):
+        load_config(p, working_dir=tmp_path)
+
+
+def test_local_mode_rejects_a_remote_base_url() -> None:
+    """'local' must mean local: a remote base_url under mode 'local' would send
+    transcript text off-machine while the operator believes it did not."""
+    from vidproc.config import RefinerConfig
+
+    with pytest.raises(ConfigError, match="must not point off-machine"):
+        RefinerConfig(mode="local", model="m", base_url="https://example.com/v1").validate()
+
+
+def test_local_mode_accepts_a_loopback_base_url() -> None:
+    from vidproc.config import RefinerConfig
+
+    RefinerConfig(mode="local", model="m", base_url="http://127.0.0.1:11434/v1").validate()

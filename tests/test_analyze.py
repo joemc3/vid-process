@@ -135,7 +135,13 @@ def test_tail_window_stays_bounded_on_a_short_file(tmp_path, monkeypatch) -> Non
     from vidproc.probe import MediaInfo
 
     hop = 0.25
-    db = np.full(int(30 / hop), 35.0)  # 30s, all speech, no trailing silence
+    # 2s of quiet then 28s of speech, ending abruptly with no trailing silence.
+    # The quiet lead-in matters: the gate is derived from the file's own 5th
+    # percentile, so a perfectly constant envelope would put the floor at the
+    # signal level and nothing could ever clear it.
+    db = np.concatenate(
+        [np.full(int(2 / hop), 8.0), np.full(int(28 / hop), 35.0)]
+    )
     monkeypatch.setattr(
         "vidproc.analyze.envelope_for", lambda *a, **k: Envelope(db=db, hop_s=hop)
     )
@@ -162,3 +168,16 @@ def test_proposal_json_round_trips(tmp_path, fake_envelope, fake_probe) -> None:
     data = json.loads(p.to_json())
     assert data["start_s"] == pytest.approx(p.start_s)
     assert "head_reasons" in data and isinstance(data["head_reasons"], list)
+
+
+def test_a_silent_file_is_never_transcribed(tmp_path, fake_probe, monkeypatch) -> None:
+    """detect_boundaries falls back to head=0.0 when no speech is found;
+    transcribing from there hands the ASR the dead air it must never see."""
+    hop = 0.25
+    db = np.full(int(600 / hop), 8.0)  # ten minutes of digital silence
+    monkeypatch.setattr(
+        "vidproc.analyze.envelope_for", lambda *a, **k: Envelope(db=db, hop_s=hop)
+    )
+    asr = FakeASR([])
+    analyze(tmp_path / "silent.mp4", make_config(tmp_path), asr=asr, refiner=FakeRefiner(0.0))
+    assert asr.calls == []
