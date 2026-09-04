@@ -65,7 +65,13 @@ def extract_pcm(
         # catch BaseException, not Exception.
         tmp.unlink(missing_ok=True)
         raise
-    os.replace(tmp, dest)
+    try:
+        os.replace(tmp, dest)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise ExternalToolError(
+            f"could not move decoded audio into place at {dest}: {exc}"
+        ) from exc
     return dest
 
 

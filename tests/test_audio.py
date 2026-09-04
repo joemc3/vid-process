@@ -115,3 +115,32 @@ def test_failed_extraction_leaves_no_cache_file(tmp_path: Path) -> None:
         extract_pcm(tmp_path / "nonexistent.mp4", dest)
     assert not dest.exists()
     assert list(tmp_path.glob("*.part")) == []
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="ffmpeg not installed")
+def test_rename_failure_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None:
+    """A failed rename must clean up and surface as ExternalToolError, not a
+    bare OSError the CLI will not catch."""
+    import os as _os
+
+    from vidproc.audio import extract_pcm
+    from vidproc.errors import ExternalToolError
+
+    def boom(src, dst):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(_os, "replace", boom)
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:a", "aac", str(src),
+        ],
+        check=True,
+    )
+    dest = tmp_path / "out.pcm"
+    with pytest.raises(ExternalToolError, match="could not move decoded audio"):
+        extract_pcm(src, dest)
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.part")) == []
