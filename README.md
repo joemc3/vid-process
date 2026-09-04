@@ -1,205 +1,299 @@
-# Video File Monitor
+# vidproc
 
-A Python script that monitors a network share for video files being written by ffmpeg, detects when recording is complete, and automatically copies files to processing and backup locations.
+Finds where a recorded conference session actually starts and ends, so a raw capture can be
+trimmed without scrubbing through it by hand in VLC.
 
-## Use Case
+Point it at a raw Poster Theater capture and it gives you a start timecode, an end timecode, how
+confident it is in each, and the transcript around both cuts so you can check its work:
 
-This tool is designed for multi-server video recording workflows:
+```
+AAO2025PT12  (56m14.5s raw)
+  start     288.50s  4m48.5s   ok
+           - energy and model agree within 0.0s
+           opens on: "All right. Good morning, everyone. My name is Alex Rivera..."
+  end      3186.75s  53m06.8s   ok
+           - final silence 189.5s
+           - closing language found near the end
+  output duration 48m18.2s
+  ffmpeg: -ss 288.50 -to 3186.75
+```
 
-- **Recording Server**: Runs ffmpeg to capture video streams and writes files to a network share
-- **Processing Server**: Runs this monitor script to detect completed recordings and distribute them
+You take that `-ss` / `-to` pair and render with it. **The render is not automated yet** — see
+[Rendering the trimmed file](#rendering-the-trimmed-file).
 
-## Features
+## What it does and doesn't do
 
-- **Automatic Detection**: Continuously scans for new video files on a network share
-- **Smart Completion Detection**: Monitors file size stability to determine when ffmpeg has finished writing
-- **Multi-destination Copy**: Automatically copies completed files to both processing and backup locations
-- **Configurable**: Easy-to-modify settings for paths, timing, and file patterns
-- **Robust**: Handles network share access issues gracefully with retry logic
-- **Logging**: Comprehensive logging of all monitoring and copy operations
+**Does:** finds the two cut points for one session file, and tells you how much to trust each one.
 
-## Requirements
+**Doesn't:** render, resize, copy files anywhere, upload to the CDN or the host, or touch the
+meeting guide. Those are still manual. It also doesn't split a session into per-presenter clips —
+one session in, one pair of timecodes out.
 
-- Python 3.6 or higher
-- Network access to the recording server's shared folder
-- Write permissions to processing and backup directories
+## Prerequisites
 
-## Installation
+Everything below assumes macOS on Apple Silicon.
 
-1. Clone or download this repository
-2. No additional dependencies required (uses Python standard library only)
+### 1. Homebrew
+
+If `brew --version` fails, install it from [brew.sh](https://brew.sh).
+
+### 2. uv
+
+Manages Python and the project's dependencies, so you don't need to install Python yourself.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then restart your terminal and check that `uv --version` works.
+
+### 3. ffmpeg and whisper.cpp
+
+```bash
+brew install ffmpeg whisper-cpp
+```
+
+Verify: `ffprobe -version` and `whisper-cli --help` should both produce output.
+
+### 4. A whisper model
+
+whisper.cpp needs a model file, which is a separate download. Start with the small one:
+
+```bash
+mkdir -p ~/models
+curl -L -o ~/models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
+
+That is **144 MB**, and it is enough. On the three 2025 sessions it produced *identical* cut
+points to the 3.1 GB model, in about a third of the time. It reliably transcribes the things that
+matter here — "good morning", "welcome to this session", "I'm pretty loud, okay" — even though it
+mangles proper nouns, rendering *Alex Rivera* as "Alex Rivera" and *poster theater* as "social
+theater". Wrong names don't change where the cut goes.
+
+If you want transcripts accurate enough to reuse for anything else, get the large model instead —
+but it is **3.1 GB**, so don't pull it over conference wifi on the morning of an event:
+
+```bash
+curl -L -o ~/models/ggml-large-v3.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
+```
+
+### 5. A language model — optional, but it improves the start cut
+
+The end cut needs no model at all and is accurate without one. The start cut is harder, because
+the first speech in a recording is often a mic check or an apology for technical difficulties, and
+a model reading the transcript can skip past those. You have three choices — see
+[Refiner modes](#refiner-modes). If you skip this entirely everything still works; the start is
+just always flagged for you to confirm.
+
+**For a local model** (nothing leaves the machine), install [Ollama](https://ollama.com) and pull
+one:
+
+```bash
+ollama pull qwen3.6:35b-a3b
+```
+
+**For a remote model**, get an OpenRouter key and export it:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+## Setup
+
+```bash
+cd vid-process
+uv sync
+```
+
+That creates the environment and installs dependencies. Check it worked:
+
+```bash
+uv run vidproc --help
+```
+
+## Quick start
+
+Make a config file. This one uses the small whisper model and a local language model:
+
+```bash
+cat > myconfig.json <<'EOF'
+{
+  "asr":     { "model_path": "/Users/YOURNAME/models/ggml-base.en.bin" },
+  "refiner": { "mode": "local", "model": "qwen3.6:35b-a3b" }
+}
+EOF
+```
+
+Use the full path to your home directory — `~` is not expanded inside a JSON file.
+
+Then run it:
+
+```bash
+uv run vidproc /path/to/AAO2026PT01.mp4 -c myconfig.json -w working
+```
+
+A ~60 minute session takes about 40 seconds with the small whisper model, or two to three minutes
+with the large one — most of it transcription either way. The proposal is also written to
+`working/<session>/proposal.json` if you want it machine-readable, and `--json` prints that
+instead of the human-readable summary.
+
+## Reading the output
+
+Each boundary is marked `ok` or `REVIEW`.
+
+**`ok`** means both of that boundary's confidence checks passed. **`REVIEW`** means at least one
+did not, and the reason is printed underneath — for example `only 0.5s of silence before the
+start` or `no refinement available; energy candidate used unverified`.
+
+**Always read the `opens on:` line.** It shows the first words of what will be published, and it
+is the fastest way to catch a wrong start. If it reads like a mic check — *"Hello everybody. Oh
+yeah, I'm pretty loud"* — the start is too early and you should move it forward yourself.
+
+`REVIEW` does not mean the number is wrong, and `ok` does not guarantee it is right. Treat both as
+a proposal to check, not an answer, until you have watched the tool get it right enough times to
+trust it.
+
+## Rendering the trimmed file
+
+Take the `-ss` / `-to` pair from the output:
+
+```bash
+ffmpeg -y -ss 288.50 -to 3186.75 -i raw/AAO2026PT01.mp4 \
+  -vf "scale=-2:'min(720,ih)',format=yuv420p" \
+  -c:v libx264 -preset slower -crf 22 -level 3.1 -movflags +faststart \
+  -c:a aac -b:a 80k processed/AAO2026PT01.mp4
+```
+
+Then check the result in VLC — the first few seconds, the last few seconds, and a spot in the
+middle — before it goes anywhere.
+
+This differs from the command used in 2025, in four ways that all matter:
+
+- **No `-r`.** These captures are 16 fps. The old command forced 29.850746 fps, duplicating frames
+  to inflate a 16 fps source: 87% more frames encoded for a 19% larger file, and no visual
+  difference. Let the source rate pass through.
+- **No `-pass 1`.** It does nothing alongside `-crf`, and it writes a ~34 MB
+  `ffmpeg2pass-0.log.mbtree` into whatever directory you ran from.
+- **No `-profile:v high422`.** It was silently overridden anyway — the output was already
+  High/4:2:0.
+- **`-ss` and `-to` go before `-i`.** Still frame-accurate, and it skips decoding the part you are
+  cutting away.
 
 ## Configuration
 
-The script uses a `config.json` file for all settings. When you first run the script, it will automatically create a `config.json` file with default values if one doesn't exist.
+Pass a JSON file with `-c`. Every key is optional; defaults are shown.
 
-### Initial Setup
-
-1. Run the script once to generate the default config file:
-   ```bash
-   python video_monitor.py
-   ```
-
-2. Edit the generated `config.json` file with your settings:
-   ```json
-   {
-       "imageSource": "\\\\RECORDING-SERVER\\SharedFolder",
-       "processingLocation": "C:\\path\\to\\processing",
-       "backupLocation": "C:\\path\\to\\backup",
-       "file_pattern": "*.mp4",
-       "stability_period_sec": 15,
-       "check_interval_sec": 5,
-       "scan_interval_sec": 30,
-       "min_file_size": 10
-   }
-   ```
-
-3. Run the script again to start monitoring with your custom settings
-
-**Note**: You can also copy `config.example.json` to `config.json` and edit it directly.
-
-### Configuration Parameters
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `imageSource` | Network share path where ffmpeg writes files (UNC path format) | `\\RECORDING-SERVER\SharedFolder` |
-| `processingLocation` | Local path where files are copied for processing | `C:\path\to\processing` |
-| `backupLocation` | Local path where files are backed up | `C:\path\to\backup` |
-| `file_pattern` | Glob pattern to match video files | `*.mp4` |
-| `min_file_size` | Minimum file size in MB (files must exceed this size to be processed) | 10 MB |
-| `stability_period_sec` | How long file size must remain unchanged to consider recording complete | 15 seconds |
-| `check_interval_sec` | How often to check file size during monitoring | 5 seconds |
-| `scan_interval_sec` | How often to scan source directory for new files | 30 seconds |
-
-## Usage
-
-### Basic Usage
-
-After configuring your `config.json` file:
-
-```bash
-python video_monitor.py
+```json
+{
+  "detection": {
+    "floor_percentile": 5.0,
+    "gate_offset_db": 8.0,
+    "min_speech_s": 3.0,
+    "min_tail_silence_s": 10.0,
+    "head_window_s": 180.0,
+    "tail_window_s": 60.0,
+    "head_preroll_s": 1.0,
+    "tail_pad_s": 2.0
+  },
+  "refiner": {
+    "mode": "none",
+    "model": "",
+    "base_url": "",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "timeout_s": 60.0
+  },
+  "asr": { "binary": "whisper-cli", "model_path": "", "language": "en" }
+}
 ```
 
-The script will:
-- Load settings from `config.json`
-- Start monitoring the source directory
-- Log all activity to the console
-- Run continuously until stopped with `Ctrl+C`
+The two you are most likely to change:
 
-### Running as a Background Service
+- **`head_preroll_s`** — how long before the first word to start. At 1.0s the 2025 sessions keep
+  their opening word; the hand-made cuts clipped it.
+- **`tail_pad_s`** — how long after the last audio to end.
 
-#### Windows (using Task Scheduler)
+`min_tail_silence_s` is capped at 20.0 and should not be raised. One 2025 session had its
+recording stopped 27 seconds after the session ended; require more silence than exists and the
+detector finds none and returns nonsense.
 
-1. Open Task Scheduler
-2. Create a new task that runs at startup
-3. Set the action to run: `python C:\path\to\video_monitor.py`
-4. Configure to run whether user is logged in or not
+## Refiner modes
 
-#### Linux (using systemd)
+| Mode | Behaviour |
+| --- | --- |
+| `none` | No model. The energy candidate is proposed and the start is **always** flagged for review. |
+| `local` | Ollama at `http://localhost:11434/v1`. Nothing leaves the machine. |
+| `openrouter` | OpenRouter at `https://openrouter.ai/api/v1`, key read from `$OPENROUTER_API_KEY`. |
 
-Create `/etc/systemd/system/video-monitor.service`:
+Remote access goes through OpenRouter only, never a provider API directly.
 
-```ini
-[Unit]
-Description=Video File Monitor
-After=network.target
+**A model listed by `ollama list` with a `:cloud` suffix runs on Ollama's servers, not yours.** Do
+not configure one under `local` if the point is that nothing leaves the machine. The tool rejects a
+`local` config whose `base_url` points anywhere but loopback, but it cannot tell a cloud-backed
+model *name* from a local one — that part is on you.
 
-[Service]
-Type=simple
-User=youruser
-WorkingDirectory=/path/to/vid-process
-ExecStart=/usr/bin/python3 /path/to/vid-process/video_monitor.py
-Restart=always
+If the model is unreachable — no network at the venue, Ollama not running, a missing key — the run
+still completes. It falls back to the energy candidate, marks the start `REVIEW`, and says why. A
+session is never failed because a model was unavailable.
 
-[Install]
-WantedBy=multi-user.target
-```
+## Known limitations
 
-Then enable and start:
+Measured against three 2025 sessions whose hand-made cut points are known.
 
-```bash
-sudo systemctl enable video-monitor
-sudo systemctl start video-monitor
-```
+**End detection is reliable.** Within about a second on all three, and it needs no model.
 
-## How It Works
+**Start detection is not, yet.** Of the three: one correct, one correctly flagged for review, and
+one wrong by 8 seconds *without* being flagged. In that third case the mic check and the welcome
+landed in the same transcript line, so the model could not select the right point and nothing
+looked anomalous. That is why you should read the `opens on:` line on every session, and why
+reviewing every proposal is the right default for now.
 
-1. **Scan**: Compares files in `imageSource` to files already in `processingLocation`
-2. **Detect**: Identifies new files that haven't been processed yet
-3. **Monitor**: For each new file, monitors the file size at regular intervals
-4. **Verify**: File must meet TWO requirements before being considered complete:
-   - File size must be **greater than** `min_file_size` (in MB)
-   - File size must remain **stable** (unchanged at the byte level) for `stability_period_sec`
-5. **Copy**: Copies the completed file to both `processingLocation` and `backupLocation`
-6. **Repeat**: Continues scanning for new files indefinitely
-
-### Why File Size Monitoring?
-
-Monitoring file size stability is the most reliable cross-platform method to detect when ffmpeg has finished writing a file, especially over network shares where file locking mechanisms may not work reliably.
-
-The minimum file size requirement prevents processing of incomplete recordings, test files, or corrupted files that may have stopped growing but are too small to be valid recordings.
-
-**Important**: Stability is determined by comparing exact file sizes in bytes, not rounded megabytes. This ensures that even small writes (like metadata updates) will be detected and the stability timer will reset. The file must remain at the exact same byte count for the entire stability period before it's considered ready for processing.
-
-## Logging
-
-The script outputs detailed logs to the console:
-
-- `INFO`: Normal operations (file detection, copying, completion)
-- `WARNING`: Non-critical issues (missing directories)
-- `ERROR`: Failures (copy errors, access issues)
-- `DEBUG`: Detailed monitoring information (change logging level in script)
-
-Example output:
-
-```
-2025-10-17 14:32:10 - INFO - Video File Monitor Started
-2025-10-17 14:32:10 - INFO - Source: \\RECORDING-SERVER\SharedFolder
-2025-10-17 14:32:10 - INFO - Processing: C:\path\to\processing
-2025-10-17 14:32:10 - INFO - Backup: C:\path\to\backup
-2025-10-17 14:32:45 - INFO - Found 1 new file(s): recording_20251017_143200.mp4
-2025-10-17 14:32:45 - INFO - Monitoring file stability: \\RECORDING-SERVER\SharedFolder\recording_20251017_143200.mp4
-2025-10-17 14:32:45 - INFO - Requirements: stable for 15s AND size > 10 MB
-2025-10-17 14:32:50 - INFO - File size changing... (Current size: 52.43 MB)
-2025-10-17 14:33:05 - INFO - File ready: stable for 15s and size is 125.67 MB
-2025-10-17 14:33:05 - INFO - Copying to: C:\path\to\processing\recording_20251017_143200.mp4
-2025-10-17 14:33:12 - INFO - Successfully copied to: C:\path\to\processing\recording_20251017_143200.mp4
-2025-10-17 14:33:12 - INFO - Copying to: C:\path\to\backup\recording_20251017_143200.mp4
-2025-10-17 14:33:19 - INFO - Successfully copied to: C:\path\to\backup\recording_20251017_143200.mp4
-2025-10-17 14:33:19 - INFO - Successfully processed: recording_20251017_143200.mp4
-```
+The detector also assumes the recording contains a decent stretch of dead air, which holds when
+the sound board is not feeding the capture before the session starts. A recording joined
+mid-session may produce a start that is too *late* — the one error the design otherwise avoids. It
+will usually be flagged, but check it.
 
 ## Troubleshooting
 
-### Script can't access network share
+**`asr.model_path is required for whisper-cpp`** — your config has no `model_path`, or the path is
+wrong. Use an absolute path, not `~`.
 
-- Verify the UNC path is correct: `\\SERVER\Share`
-- Ensure the user running the script has read permissions on the network share
-- Test access manually: `dir \\SERVER\Share` (Windows) or `ls /mnt/share` (Linux)
+**`whisper-cli not found on PATH`** — `brew install whisper-cpp`.
 
-### Files not being detected
+**`ffprobe not found on PATH`** — `brew install ffmpeg`.
 
-- Check the `file_pattern` matches your video files
-- Verify files exist in `imageSource` but not in `processingLocation`
-- Increase logging level to `DEBUG` in the script for more details
+**`refiner mode 'local' must not point off-machine`** — your `base_url` under `local` is not
+loopback. Either fix it or switch to `openrouter`.
 
-### Copy operations failing
+**Start marked `REVIEW` with "no refinement available"** — the model was unreachable. Check that
+`ollama list` responds, or that `$OPENROUTER_API_KEY` is set. Not fatal: the timecodes are still
+usable, you just have to check the start yourself.
 
-- Verify write permissions on `processingLocation` and `backupLocation`
-- Ensure sufficient disk space is available
-- Check that destination paths exist or can be created
+**A run seems to hang** — no external call has a timeout yet. If ffmpeg or whisper stalls on a
+slow or network-mounted file, Ctrl-C is safe: partial cache files are cleaned up rather than
+reused. Copy the raw to a local disk first; it is faster anyway.
 
-### Script stops unexpectedly
+## Tests
 
-- Check system logs for errors
-- Consider running as a service with auto-restart enabled
-- Monitor disk space and network connectivity
+```bash
+uv run pytest                      # everything
+uv run pytest -m "not samples"     # skip the tests that need real footage
+```
 
-## License
+The `samples` tests score the detector against the three 2025 sessions and skip cleanly when
+`sample/` is absent, so the suite stays green on a machine without the footage.
 
-This project is released into the public domain. Use it however you like.
+## Also in this repo
 
-## Support
+`video_monitor.py`, `filecheck.md`, and `config.example.json` / `config.AAO25.json` belong to an
+older file-copy monitor that watches the capture share and copies finished recordings off it. That
+is a separate tool with a **separate and unrelated `config.json` format** — don't confuse its
+config with vidproc's. It has not been migrated yet.
 
-For issues or questions, please check the documentation in `filecheck.md` for additional technical details about the monitoring approach.
+## sample/
+
+`sample/` holds real conference recordings of identifiable presenters, kept for regression
+testing. It is gitignored and **must never be committed, pushed, or uploaded anywhere.** So is
+`working/`, which fills with decoded audio and transcript excerpts derived from it. Fixtures that
+do get committed are derived values only — timecodes and transcripts, never media.

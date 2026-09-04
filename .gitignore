@@ -47,3 +47,11 @@ config.json
 # Temporary files
 *.tmp
 *.bak
+
+# Sample footage - LOCAL ONLY, never commit or push
+sample/
+
+# CLI working directory - cached PCM decoded from source audio, and proposals
+# carrying transcript excerpts. Derived from footage that must not leave this
+# machine, so it must never be committable.
+working/
