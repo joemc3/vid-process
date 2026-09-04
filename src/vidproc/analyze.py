@@ -4,8 +4,8 @@ from pathlib import Path
 
 from vidproc.asr import ASR, Line, WhisperCppASR, words_to_lines
 from vidproc.audio import envelope_for
-from vidproc.config import Config
 from vidproc.confidence import score
+from vidproc.config import Config
 from vidproc.detect import detect_boundaries, runs_above
 from vidproc.probe import probe
 from vidproc.proposal import Proposal

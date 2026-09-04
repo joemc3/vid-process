@@ -40,7 +40,7 @@ def fake_envelope(monkeypatch) -> None:
     """900s silence, 20s speech, 25s plateau, 600s speech, 190s silence."""
     hop = 0.25
     segs = [(8.0, 900.0), (35.0, 20.0), (12.0, 25.0), (35.0, 600.0), (8.0, 190.0)]
-    db = np.concatenate([np.full(int(round(d / hop)), lvl) for lvl, d in segs])
+    db = np.concatenate([np.full(round(d / hop), lvl) for lvl, d in segs])
     monkeypatch.setattr(
         "vidproc.analyze.envelope_for", lambda *a, **k: Envelope(db=db, hop_s=hop)
     )

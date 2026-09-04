@@ -19,7 +19,7 @@ FLOOR, PLATEAU, SPEECH = 8.0, 12.0, 35.0
 
 def build(segments: list[tuple[float, float]]) -> Envelope:
     """segments: list of (level_db, duration_s) -> Envelope at 0.25s hop."""
-    parts = [np.full(int(round(d / HOP)), lvl, dtype=np.float64) for lvl, d in segments]
+    parts = [np.full(round(d / HOP), lvl, dtype=np.float64) for lvl, d in segments]
     return Envelope(db=np.concatenate(parts), hop_s=HOP)
 
 

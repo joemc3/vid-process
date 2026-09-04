@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from vidproc.asr import Line, Word, parse_whisper_json, words_to_lines
@@ -60,7 +62,7 @@ def test_words_to_lines_on_empty_input() -> None:
     assert words_to_lines([], max_gap_s=0.8) == []
 
 
-def test_line_is_hashable_and_frozen() -> None:
+def test_line_is_frozen() -> None:
     line = Line(text="x", start_s=1.0, end_s=2.0)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         line.text = "y"  # type: ignore[misc]
