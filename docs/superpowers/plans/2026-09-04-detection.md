@@ -92,13 +92,30 @@ def test_unknown_refiner_mode_is_rejected() -> None:
         RefinerConfig(mode="anthropic").validate()
 
 
+def test_non_none_mode_requires_an_explicit_model() -> None:
+    """No safe default exists: some Ollama models carry a :cloud suffix and run
+    off-machine, so a guessed default could silently defeat 'local'."""
+    from vidproc.config import RefinerConfig
+
+    with pytest.raises(ConfigError, match="requires a model name"):
+        RefinerConfig(mode="local").validate()
+
+
 def test_file_overrides_merge_over_defaults(tmp_path: Path) -> None:
     p = tmp_path / "c.json"
-    p.write_text(json.dumps({"detection": {"gate_offset_db": 12.0}, "refiner": {"mode": "local"}}))
+    p.write_text(
+        json.dumps(
+            {
+                "detection": {"gate_offset_db": 12.0},
+                "refiner": {"mode": "local", "model": "qwen3.6:35b-a3b"},
+            }
+        )
+    )
     cfg = load_config(p, working_dir=tmp_path)
     assert cfg.detection.gate_offset_db == 12.0
     assert cfg.detection.min_speech_s == 3.0  # untouched default
     assert cfg.refiner.mode == "local"
+    assert cfg.refiner.model == "qwen3.6:35b-a3b"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -808,9 +825,16 @@ def test_end_ignores_short_mid_session_gaps() -> None:
 
 
 def test_no_trailing_silence_yields_end_at_duration() -> None:
+    """Recording stopped mid-session: trim nothing from the end.
+
+    Also guards the leading-silence trap — the 60s of quiet at the FRONT is a
+    long silence run, but it is not the tail and must never be returned as the
+    end cut.
+    """
     env = build([(FLOOR, 60.0), (SPEECH, 200.0)])
     b = detect_boundaries(env, DetectionConfig())
     assert b.end_s == pytest.approx(env.duration_s, abs=0.5)
+    assert b.tail_silence_s == pytest.approx(0.0, abs=0.5)
 
 
 def test_pre_head_silence_is_measured() -> None:
@@ -897,20 +921,25 @@ def runs_above(env: Envelope, gate_db: float, min_duration_s: float) -> list[tup
 def final_silence_start(
     env: Envelope, gate_db: float, min_silence_s: float
 ) -> tuple[float, float]:
-    """(start, length) of the last silence run at least min_silence_s long.
+    """(start, length) of the TRAILING silence — the quiet that runs to the end.
 
-    Returns (duration, 0.0) when no qualifying silence exists — i.e. the
-    recording was stopped while audio was still playing.
+    Anchored to the last frame above the gate, not to "the last long quiet
+    run". Those differ: a file that opens with five minutes of silence and
+    then never stops talking has a long quiet run, but it is at the front and
+    is emphatically not the end of the session.
+
+    Returns (duration, 0.0) — trim nothing from the end — when nothing is ever
+    above the gate, or when too little silence follows the last audio, meaning
+    the recording was stopped while the session was still going.
     """
-    qualifying = [
-        (s * env.hop_s, e * env.hop_s)
-        for s, e in _boolean_runs(env.db <= gate_db)
-        if (e - s) * env.hop_s >= min_silence_s
-    ]
-    if not qualifying:
+    loud = env.db > gate_db
+    if not loud.any():
         return env.duration_s, 0.0
-    start, end = qualifying[-1]
-    return start, end - start
+    last_loud = int(np.flatnonzero(loud)[-1])
+    silence_s = (len(loud) - 1 - last_loud) * env.hop_s
+    if silence_s < min_silence_s:
+        return env.duration_s, 0.0
+    return (last_loud + 1) * env.hop_s, silence_s
 
 
 def detect_boundaries(env: Envelope, cfg: DetectionConfig) -> Boundaries:
