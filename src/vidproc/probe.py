@@ -36,17 +36,23 @@ def parse_probe_json(payload: dict[str, Any], path: Path) -> MediaInfo:
     except (KeyError, TypeError, ValueError) as exc:
         raise ExternalToolError(f"no usable duration in {path}") from exc
 
-    return MediaInfo(
-        path=path,
-        duration_s=duration,
-        width=int(video["width"]),
-        height=int(video["height"]),
-        # Always read the real rate. Never assume 16 fps.
-        fps=Fraction(video["r_frame_rate"]),
-        video_codec=str(video.get("codec_name", "")),
-        audio_sample_rate=int(audio["sample_rate"]),
-        audio_channels=int(audio["channels"]),
-    )
+    try:
+        return MediaInfo(
+            path=path,
+            duration_s=duration,
+            width=int(video["width"]),
+            height=int(video["height"]),
+            # Always read the real rate. Never assume 16 fps.
+            fps=Fraction(video["r_frame_rate"]),
+            video_codec=str(video.get("codec_name", "")),
+            audio_sample_rate=int(audio["sample_rate"]),
+            audio_channels=int(audio["channels"]),
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        # ffprobe really does emit r_frame_rate "0/0" — it does so for the audio
+        # stream of every sample file, and for video on some VFR sources — and
+        # Fraction("0/0") is a ZeroDivisionError, which is not a ValueError.
+        raise ExternalToolError(f"unusable stream properties in {path}: {exc}") from exc
 
 
 def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
@@ -64,4 +70,8 @@ def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
     except subprocess.CalledProcessError as exc:
         raise ExternalToolError(f"ffprobe failed on {path}: {exc.stderr.strip()}") from exc
 
-    return parse_probe_json(json.loads(result.stdout), path)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ExternalToolError(f"ffprobe returned unparseable JSON for {path}: {exc}") from exc
+    return parse_probe_json(payload, path)

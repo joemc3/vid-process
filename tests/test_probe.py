@@ -60,6 +60,34 @@ def test_fps_is_never_assumed() -> None:
     assert parse_probe_json(payload, Path("x.mp4")).fps == Fraction(30000, 1001)
 
 
+def test_zero_frame_rate_surfaces_as_external_tool_error() -> None:
+    """ffprobe emits r_frame_rate "0/0" in practice - it does so for the audio
+    stream of every sample file - and Fraction("0/0") raises ZeroDivisionError,
+    which is not a ValueError and so needs naming explicitly."""
+    payload = {
+        "format": {"duration": "10"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1920,
+             "height": 1080, "r_frame_rate": "0/0"},
+            {"codec_type": "audio", "sample_rate": "44100", "channels": 2},
+        ],
+    }
+    with pytest.raises(ExternalToolError, match="unusable stream properties"):
+        parse_probe_json(payload, Path("x.mp4"))
+
+
+def test_missing_stream_field_surfaces_as_external_tool_error() -> None:
+    payload = {
+        "format": {"duration": "10"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "r_frame_rate": "16/1"},
+            {"codec_type": "audio", "sample_rate": "44100", "channels": 2},
+        ],
+    }
+    with pytest.raises(ExternalToolError, match="unusable stream properties"):
+        parse_probe_json(payload, Path("x.mp4"))
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="ffmpeg not installed")
 def test_probe_real_file(tmp_path: Path) -> None:
     media = tmp_path / "gen.mp4"
