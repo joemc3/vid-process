@@ -123,6 +123,37 @@ def test_start_never_goes_negative(tmp_path, fake_probe, monkeypatch) -> None:
     assert p.start_s >= 0.0
 
 
+def test_tail_window_stays_bounded_on_a_short_file(tmp_path, monkeypatch) -> None:
+    """A file shorter than tail_window_s still yields a bounded tail window.
+
+    final_silence_start returns the full duration when there is no adequate
+    trailing silence, so end_s can be small. The window must stay non-negative
+    and never exceed tail_window_s of audio.
+    """
+    from fractions import Fraction
+
+    from vidproc.probe import MediaInfo
+
+    hop = 0.25
+    db = np.full(int(30 / hop), 35.0)  # 30s, all speech, no trailing silence
+    monkeypatch.setattr(
+        "vidproc.analyze.envelope_for", lambda *a, **k: Envelope(db=db, hop_s=hop)
+    )
+    monkeypatch.setattr(
+        "vidproc.analyze.probe",
+        lambda p, **k: MediaInfo(
+            path=p, duration_s=30.0, width=1920, height=1080, fps=Fraction(16, 1),
+            video_codec="h264", audio_sample_rate=44100, audio_channels=2,
+        ),
+    )
+    asr = FakeASR([])
+    cfg = make_config(tmp_path)
+    analyze(tmp_path / "short.mp4", cfg, asr=asr, refiner=FakeRefiner(0.0))
+    _, tail_call = asr.calls
+    assert tail_call[0] >= 0.0
+    assert tail_call[1] - tail_call[0] <= cfg.detection.tail_window_s
+
+
 def test_proposal_json_round_trips(tmp_path, fake_envelope, fake_probe) -> None:
     p = analyze(
         tmp_path / "s.mp4", make_config(tmp_path),

@@ -42,6 +42,10 @@ def analyze(
     )
     head_lines = words_to_lines(head_words)
 
+    # Width is min(end_s, tail_window_s) — never more than one window. On a file
+    # shorter than a window the tail window is the whole file, which is fine:
+    # the invariant exists to stop the transcriber being handed long stretches
+    # of dead air, and a file shorter than one window cannot contain any.
     tail_start = max(0.0, bounds.end_s - d.tail_window_s)
     tail_words = asr.transcribe(media, tail_start, bounds.end_s)
     tail_lines = words_to_lines(tail_words)
