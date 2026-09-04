@@ -1,205 +1,98 @@
-# Video File Monitor
+# vidproc
 
-A Python script that monitors a network share for video files being written by ffmpeg, detects when recording is complete, and automatically copies files to processing and backup locations.
+Finds where a recorded conference session actually starts and ends, so the raw capture can be
+trimmed without scrubbing through it by hand.
 
-## Use Case
+Given a raw Poster Theater capture, `vidproc` proposes a start and end timecode, says how
+confident it is in each, and shows the transcript around both cuts as evidence.
 
-This tool is designed for multi-server video recording workflows:
+## How it works
 
-- **Recording Server**: Runs ffmpeg to capture video streams and writes files to a network share
-- **Processing Server**: Runs this monitor script to detect completed recordings and distribute them
+The capture is silent until the sound board goes live, so the end of a session is found by
+energy alone — the start of the final silence — and lands within about a second of a
+hand-made cut. The start is harder: the first speech is often a mic check or an apology for
+technical difficulties, so energy gives a conservative lower bound and an optional language
+model picks the first line that belongs in the published video.
 
-## Features
+## Install
 
-- **Automatic Detection**: Continuously scans for new video files on a network share
-- **Smart Completion Detection**: Monitors file size stability to determine when ffmpeg has finished writing
-- **Multi-destination Copy**: Automatically copies completed files to both processing and backup locations
-- **Configurable**: Easy-to-modify settings for paths, timing, and file patterns
-- **Robust**: Handles network share access issues gracefully with retry logic
-- **Logging**: Comprehensive logging of all monitoring and copy operations
+```bash
+uv sync
+```
 
-## Requirements
+External binaries, not installed by `uv`:
 
-- Python 3.6 or higher
-- Network access to the recording server's shared folder
-- Write permissions to processing and backup directories
+| Tool | Needed for |
+| --- | --- |
+| `ffprobe` | reading source properties |
+| `ffmpeg` | audio extraction |
+| `whisper-cli` (whisper.cpp) | transcribing the windows around each cut |
 
-## Installation
-
-1. Clone or download this repository
-2. No additional dependencies required (uses Python standard library only)
-
-## Configuration
-
-The script uses a `config.json` file for all settings. When you first run the script, it will automatically create a `config.json` file with default values if one doesn't exist.
-
-### Initial Setup
-
-1. Run the script once to generate the default config file:
-   ```bash
-   python video_monitor.py
-   ```
-
-2. Edit the generated `config.json` file with your settings:
-   ```json
-   {
-       "imageSource": "\\\\RECORDING-SERVER\\SharedFolder",
-       "processingLocation": "C:\\path\\to\\processing",
-       "backupLocation": "C:\\path\\to\\backup",
-       "file_pattern": "*.mp4",
-       "stability_period_sec": 15,
-       "check_interval_sec": 5,
-       "scan_interval_sec": 30,
-       "min_file_size": 10
-   }
-   ```
-
-3. Run the script again to start monitoring with your custom settings
-
-**Note**: You can also copy `config.example.json` to `config.json` and edit it directly.
-
-### Configuration Parameters
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `imageSource` | Network share path where ffmpeg writes files (UNC path format) | `\\RECORDING-SERVER\SharedFolder` |
-| `processingLocation` | Local path where files are copied for processing | `C:\path\to\processing` |
-| `backupLocation` | Local path where files are backed up | `C:\path\to\backup` |
-| `file_pattern` | Glob pattern to match video files | `*.mp4` |
-| `min_file_size` | Minimum file size in MB (files must exceed this size to be processed) | 10 MB |
-| `stability_period_sec` | How long file size must remain unchanged to consider recording complete | 15 seconds |
-| `check_interval_sec` | How often to check file size during monitoring | 5 seconds |
-| `scan_interval_sec` | How often to scan source directory for new files | 30 seconds |
+On macOS: `brew install ffmpeg whisper-cpp`. A whisper model file is also required —
+set `asr.model_path` to something like `~/models/ggml-large-v3.bin`.
 
 ## Usage
 
-### Basic Usage
+```bash
+uv run vidproc sample/raw/AAO2025PT12.mp4 --working-dir working
+uv run vidproc sample/raw/AAO2025PT12.mp4 --json      # machine-readable
+```
 
-After configuring your `config.json` file:
+The proposal is written to `<working-dir>/<session>/proposal.json`. The terminal output ends
+with a ready-to-paste `-ss` / `-to` pair, and marks either boundary `REVIEW` when confidence
+is low.
+
+## Configuration
+
+Pass a JSON file with `-c`. Any key may be omitted; defaults are shown.
+
+```json
+{
+  "detection": {
+    "floor_percentile": 5.0,
+    "gate_offset_db": 8.0,
+    "min_speech_s": 3.0,
+    "min_tail_silence_s": 10.0,
+    "head_window_s": 180.0,
+    "tail_window_s": 60.0,
+    "head_preroll_s": 1.0,
+    "tail_pad_s": 2.0
+  },
+  "refiner": { "mode": "none", "model": "", "base_url": "", "api_key_env": "OPENROUTER_API_KEY" },
+  "asr": { "binary": "whisper-cli", "model_path": "", "language": "en" }
+}
+```
+
+`min_tail_silence_s` is capped at 20.0. One observed session was stopped 27 seconds after it
+ended; a larger requirement finds no qualifying silence and the detector returns garbage.
+
+## Refiner modes
+
+| Mode | Behaviour |
+| --- | --- |
+| `none` | No model. The energy candidate is proposed and the start is always flagged for review. |
+| `local` | Ollama at `http://localhost:11434/v1`. Nothing leaves the machine. |
+| `openrouter` | OpenRouter at `https://openrouter.ai/api/v1`, key from `$OPENROUTER_API_KEY`. |
+
+Remote access goes through OpenRouter only, never a provider API directly.
+
+**Models listed by `ollama list` with a `:cloud` suffix run on Ollama's servers, not yours.**
+Do not configure one as `local` if the point is that no content leaves the machine.
+
+If the configured backend is unreachable — no network, Ollama not running, missing key —
+the run degrades to the energy candidate and flags the start for review. A session is never
+failed because a model was unavailable.
+
+## Tests
 
 ```bash
-python video_monitor.py
+uv run pytest                      # everything
+uv run pytest -m "not samples"     # skip tests needing real footage
 ```
 
-The script will:
-- Load settings from `config.json`
-- Start monitoring the source directory
-- Log all activity to the console
-- Run continuously until stopped with `Ctrl+C`
+## sample/
 
-### Running as a Background Service
-
-#### Windows (using Task Scheduler)
-
-1. Open Task Scheduler
-2. Create a new task that runs at startup
-3. Set the action to run: `python C:\path\to\video_monitor.py`
-4. Configure to run whether user is logged in or not
-
-#### Linux (using systemd)
-
-Create `/etc/systemd/system/video-monitor.service`:
-
-```ini
-[Unit]
-Description=Video File Monitor
-After=network.target
-
-[Service]
-Type=simple
-User=youruser
-WorkingDirectory=/path/to/vid-process
-ExecStart=/usr/bin/python3 /path/to/vid-process/video_monitor.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then enable and start:
-
-```bash
-sudo systemctl enable video-monitor
-sudo systemctl start video-monitor
-```
-
-## How It Works
-
-1. **Scan**: Compares files in `imageSource` to files already in `processingLocation`
-2. **Detect**: Identifies new files that haven't been processed yet
-3. **Monitor**: For each new file, monitors the file size at regular intervals
-4. **Verify**: File must meet TWO requirements before being considered complete:
-   - File size must be **greater than** `min_file_size` (in MB)
-   - File size must remain **stable** (unchanged at the byte level) for `stability_period_sec`
-5. **Copy**: Copies the completed file to both `processingLocation` and `backupLocation`
-6. **Repeat**: Continues scanning for new files indefinitely
-
-### Why File Size Monitoring?
-
-Monitoring file size stability is the most reliable cross-platform method to detect when ffmpeg has finished writing a file, especially over network shares where file locking mechanisms may not work reliably.
-
-The minimum file size requirement prevents processing of incomplete recordings, test files, or corrupted files that may have stopped growing but are too small to be valid recordings.
-
-**Important**: Stability is determined by comparing exact file sizes in bytes, not rounded megabytes. This ensures that even small writes (like metadata updates) will be detected and the stability timer will reset. The file must remain at the exact same byte count for the entire stability period before it's considered ready for processing.
-
-## Logging
-
-The script outputs detailed logs to the console:
-
-- `INFO`: Normal operations (file detection, copying, completion)
-- `WARNING`: Non-critical issues (missing directories)
-- `ERROR`: Failures (copy errors, access issues)
-- `DEBUG`: Detailed monitoring information (change logging level in script)
-
-Example output:
-
-```
-2025-10-17 14:32:10 - INFO - Video File Monitor Started
-2025-10-17 14:32:10 - INFO - Source: \\RECORDING-SERVER\SharedFolder
-2025-10-17 14:32:10 - INFO - Processing: C:\path\to\processing
-2025-10-17 14:32:10 - INFO - Backup: C:\path\to\backup
-2025-10-17 14:32:45 - INFO - Found 1 new file(s): recording_20251017_143200.mp4
-2025-10-17 14:32:45 - INFO - Monitoring file stability: \\RECORDING-SERVER\SharedFolder\recording_20251017_143200.mp4
-2025-10-17 14:32:45 - INFO - Requirements: stable for 15s AND size > 10 MB
-2025-10-17 14:32:50 - INFO - File size changing... (Current size: 52.43 MB)
-2025-10-17 14:33:05 - INFO - File ready: stable for 15s and size is 125.67 MB
-2025-10-17 14:33:05 - INFO - Copying to: C:\path\to\processing\recording_20251017_143200.mp4
-2025-10-17 14:33:12 - INFO - Successfully copied to: C:\path\to\processing\recording_20251017_143200.mp4
-2025-10-17 14:33:12 - INFO - Copying to: C:\path\to\backup\recording_20251017_143200.mp4
-2025-10-17 14:33:19 - INFO - Successfully copied to: C:\path\to\backup\recording_20251017_143200.mp4
-2025-10-17 14:33:19 - INFO - Successfully processed: recording_20251017_143200.mp4
-```
-
-## Troubleshooting
-
-### Script can't access network share
-
-- Verify the UNC path is correct: `\\SERVER\Share`
-- Ensure the user running the script has read permissions on the network share
-- Test access manually: `dir \\SERVER\Share` (Windows) or `ls /mnt/share` (Linux)
-
-### Files not being detected
-
-- Check the `file_pattern` matches your video files
-- Verify files exist in `imageSource` but not in `processingLocation`
-- Increase logging level to `DEBUG` in the script for more details
-
-### Copy operations failing
-
-- Verify write permissions on `processingLocation` and `backupLocation`
-- Ensure sufficient disk space is available
-- Check that destination paths exist or can be created
-
-### Script stops unexpectedly
-
-- Check system logs for errors
-- Consider running as a service with auto-restart enabled
-- Monitor disk space and network connectivity
-
-## License
-
-This project is released into the public domain. Use it however you like.
-
-## Support
-
-For issues or questions, please check the documentation in `filecheck.md` for additional technical details about the monitoring approach.
+`sample/` holds real conference recordings of identifiable presenters, kept for regression
+testing. It is gitignored and **must never be committed, pushed, or uploaded anywhere.**
+Fixtures that do get committed are derived artifacts only — timecodes and transcripts, never
+media.
