@@ -54,8 +54,36 @@ def parse_whisper_json(payload: dict[str, Any], offset_s: float) -> list[Word]:
     return words
 
 
+SENTENCE_END = (".", "?", "!")
+
+# Tokens that end in "." without ending a sentence. whisper is run with -ml 1
+# so every token is its own segment, and breaking after one of these puts a
+# mid-sentence split into the transcript the operator reads as evidence.
+ABBREVIATIONS = frozenset(
+    {
+        "dr.", "drs.", "mr.", "mrs.", "ms.", "prof.", "st.", "jr.", "sr.",
+        "vs.", "etc.", "e.g.", "i.e.", "no.", "fig.", "approx.",
+    }
+)
+
+
+def ends_sentence(text: str) -> bool:
+    if not text.endswith(SENTENCE_END):
+        return False
+    if text.lower() in ABBREVIATIONS:
+        return False
+    # A lone initial -- "J." in "J. Okonkwo" -- is part of a name.
+    return not (len(text) == 2 and text[0].isalpha() and text[1] == ".")
+
+
 def words_to_lines(words: list[Word], max_gap_s: float = 0.8, max_words: int = 14) -> list[Line]:
-    """Group words into readable lines, breaking on pauses and length."""
+    """Group words into readable lines, breaking on sentences, pauses and length.
+
+    refine() can only propose a start that is a line boundary, so a line that
+    runs a mic check into the session opening makes the correct cut point
+    unselectable. Breaking on sentence-final punctuation as well as on pauses
+    keeps the opening reachable when the speaker does not pause before it.
+    """
     lines: list[Line] = []
     current: list[Word] = []
 
@@ -72,7 +100,9 @@ def words_to_lines(words: list[Word], max_gap_s: float = 0.8, max_words: int = 1
 
     for word in words:
         if current and (
-            word.start_s - current[-1].end_s > max_gap_s or len(current) >= max_words
+            word.start_s - current[-1].end_s > max_gap_s
+            or len(current) >= max_words
+            or ends_sentence(current[-1].text)
         ):
             flush()
         current.append(word)

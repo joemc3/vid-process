@@ -31,6 +31,20 @@ class Proposal:
         return self.end_s - self.start_s
 
     @property
+    def opens_on(self) -> str:
+        """The first transcript line the trimmed output actually contains.
+
+        Not head_lines[0]: the refiner skips mic checks and false starts, so
+        the first line of the window is often material the cut excludes.
+        Showing it there would advertise content that was deliberately
+        dropped, in the one line the operator is told to check.
+        """
+        for line in self.head_lines:
+            if float(line["end_s"]) > self.start_s:
+                return str(line["text"])
+        return str(self.head_lines[-1]["text"]) if self.head_lines else ""
+
+    @property
     def needs_review(self) -> bool:
         return not (self.head_confident and self.end_confident)
 

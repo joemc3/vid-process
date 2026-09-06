@@ -58,6 +58,48 @@ def test_words_to_lines_caps_line_length() -> None:
     assert len(lines) == 3
 
 
+def test_words_to_lines_breaks_at_a_sentence_end() -> None:
+    """Real case (PT06): the mic check and the welcome ran together in one
+    line, so refine() could not offer the welcome as a start at all."""
+    words = [
+        Word("loud.", 604.0, 604.6),
+        Word("Okay.", 604.6, 605.2),
+        Word("Welcome", 605.3, 605.8),   # 0.1s gap, 3 words: neither rule breaks
+        Word("to", 605.8, 606.0),
+        Word("this", 606.0, 606.3),
+        Word("session.", 606.3, 606.9),
+    ]
+    lines = words_to_lines(words)
+    assert [line.text for line in lines] == [
+        "loud.",
+        "Okay.",
+        "Welcome to this session.",
+    ]
+    assert lines[2].start_s == pytest.approx(605.3)
+
+
+def test_words_to_lines_does_not_break_after_a_title_abbreviation() -> None:
+    """"Dr." ends in a period without ending a sentence. Breaking there puts a
+    spurious mid-sentence split into the `opens on:` line operators read."""
+    words = [
+        Word("here", 353.0, 353.3),
+        Word("in", 353.3, 353.5),
+        Word("Dr.", 353.5, 353.9),
+        Word("Nakamura's", 354.0, 354.6),
+        Word("place.", 354.6, 355.1),
+    ]
+    assert [line.text for line in words_to_lines(words)] == ["here in Dr. Nakamura's place."]
+
+
+def test_words_to_lines_does_not_break_after_an_initial() -> None:
+    words = [
+        Word("Speaker", 0.0, 0.4),
+        Word("J.", 0.4, 0.8),
+        Word("Okonkwo.", 0.9, 1.5),
+    ]
+    assert [line.text for line in words_to_lines(words)] == ["Speaker J. Okonkwo."]
+
+
 def test_words_to_lines_on_empty_input() -> None:
     assert words_to_lines([], max_gap_s=0.8) == []
 

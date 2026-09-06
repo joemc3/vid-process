@@ -41,8 +41,8 @@ def main(argv: list[str] | None = None) -> int:
           f"   {'ok' if proposal.head_confident else 'REVIEW'}")
     for reason in proposal.head_reasons:
         print(f"           - {reason}")
-    if proposal.head_lines:
-        print(f'           opens on: "{proposal.head_lines[0]["text"]}"')
+    if proposal.opens_on:
+        print(f'           opens on: "{proposal.opens_on}"')
     print(f"  end    {proposal.end_s:9.2f}s  {_format_clock(proposal.end_s)}"
           f"   {'ok' if proposal.end_confident else 'REVIEW'}")
     for reason in proposal.end_reasons:

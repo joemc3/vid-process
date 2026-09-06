@@ -103,7 +103,5 @@ uv run vidproc <file> -c cfg.json -w working
 Documented in README under *Known limitations*, plus:
 
 - No external call has a timeout — four subprocess invocations. Fix them in one consistent pass.
-- No `test_cli.py`.
-- `words_to_lines` splits on pauses only, not sentence boundaries, which can merge a mic check
-  into the same line as the session opening and make the correct cut point unselectable. This is
-  the highest-value known improvement.
+- No `test_cli.py`. `cli.main()` itself is still untested end to end; the `opens on:` line it
+  prints is covered indirectly by `tests/test_proposal.py`.

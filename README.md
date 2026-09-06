@@ -243,11 +243,17 @@ Measured against three 2025 sessions whose hand-made cut points are known.
 
 **End detection is reliable.** Within about a second on all three, and it needs no model.
 
-**Start detection is not, yet.** Of the three: one correct, one correctly flagged for review, and
-one wrong by 8 seconds *without* being flagged. In that third case the mic check and the welcome
-landed in the same transcript line, so the model could not select the right point and nothing
-looked anomalous. That is why you should read the `opens on:` line on every session, and why
-reviewing every proposal is the right default for now.
+**Start detection is better than it was, but still worth checking.** Of the three: two land
+within about a second of the hand-made cut, and one is flagged for review because the recording
+has almost no silence before it starts.
+
+The case that used to be wrong by 8 seconds *without* being flagged is fixed. The mic check and
+the welcome had landed in the same transcript line, so the correct point was not in the set of
+options the model could choose from at all, and nothing looked anomalous. Lines now break on
+sentence endings as well as on pauses, which keeps the opening selectable.
+
+Three sessions is a small sample and the model is still choosing from a transcript. Read the
+`opens on:` line on every session, and treat every proposal as something to review.
 
 The detector also assumes the recording contains a decent stretch of dead air, which holds when
 the sound board is not feeding the capture before the session starts. A recording joined
