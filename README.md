@@ -204,7 +204,8 @@ Pass a JSON file with `-c`. Every key is optional; defaults are shown.
     "api_key_env": "OPENROUTER_API_KEY",
     "timeout_s": 60.0
   },
-  "asr": { "binary": "whisper-cli", "model_path": "", "language": "en" }
+  "asr": { "binary": "whisper-cli", "model_path": "", "language": "en", "timeout_s": 300.0 },
+  "media": { "probe_timeout_s": 60.0, "decode_timeout_s": 600.0 }
 }
 ```
 
@@ -213,6 +214,12 @@ The two you are most likely to change:
 - **`head_preroll_s`** — how long before the first word to start. At 1.0s the 2025 sessions keep
   their opening word; the hand-made cuts clipped it.
 - **`tail_pad_s`** — how long after the last audio to end.
+
+The timeouts bound every external tool call, so a stalled ffmpeg or whisper becomes an error
+instead of a hang. On a 56-minute session these calls actually take: ffprobe 0.4s, the full audio
+decode 2s, and whisper large-v3 about 4s per window (around 35s on the first, cold run). The
+defaults leave wide headroom for a slower machine or a network-mounted file. `asr.timeout_s`
+applies to each transcription call separately.
 
 `min_tail_silence_s` is capped at 20.0 and should not be raised. One 2025 session had its
 recording stopped 27 seconds after the session ended; require more silence than exists and the
@@ -276,9 +283,10 @@ loopback. Either fix it or switch to `openrouter`.
 `ollama list` responds, or that `$OPENROUTER_API_KEY` is set. Not fatal: the timecodes are still
 usable, you just have to check the start yourself.
 
-**A run seems to hang** — no external call has a timeout yet. If ffmpeg or whisper stalls on a
-slow or network-mounted file, Ctrl-C is safe: partial cache files are cleaned up rather than
-reused. Copy the raw to a local disk first; it is faster anyway.
+**`... timed out after ...s`** — ffprobe, ffmpeg or whisper stalled, usually on a slow or
+network-mounted file. Copy the raw to a local disk and run again; it is faster anyway. If a
+genuinely slow machine needs longer, raise the matching timeout in the config. Ctrl-C is also
+safe at any point: partial cache files are cleaned up rather than reused.
 
 ## Tests
 
@@ -295,7 +303,31 @@ The `samples` tests score the detector against the three 2025 sessions and skip 
 `video_monitor.py`, `filecheck.md`, and `config.example.json` / `config.AAO25.json` belong to an
 older file-copy monitor that watches the capture share and copies finished recordings off it. That
 is a separate tool with a **separate and unrelated `config.json` format** — don't confuse its
-config with vidproc's. It has not been migrated yet.
+config with vidproc's. It has not been migrated into vidproc yet.
+
+Run it from the directory holding its `config.json`:
+
+```bash
+python3 video_monitor.py
+```
+
+A recording counts as finished once its size has not changed for `stability_period_sec`. It is
+then copied to `backupLocation`, and from the backup to `processingLocation`, so the share is read
+only once. How it behaves when things go wrong:
+
+- **One file never holds up another.** Every file is checked on each pass; a recording still in
+  progress, or one that has stalled, does not stop a finished one in another room being copied.
+- **A recording that stops below `min_file_size` is logged as `FAILED`** and not copied. If it
+  starts growing again it is picked back up.
+- **A copy is never left half-written under the real name.** It is written as `<name>.part`, its
+  size checked, and only then renamed. A failed copy is retried on the next pass.
+- **An existing file is never overwritten.** If the backup or processing folder already has a file
+  of that name at a different size — a recording restarted under the same name, say — it is logged
+  as `FAILED` and left for you to sort out.
+- **Restarting is safe.** Files already in both destinations at the right size are skipped.
+
+Watch its log for `FAILED` lines. A copy that hangs on a network share that has gone away still
+blocks the monitor while it hangs; Ctrl-C and restart once the share is back.
 
 ## sample/
 

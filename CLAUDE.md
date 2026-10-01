@@ -14,10 +14,12 @@ a start and end timecode, a confidence classification for each, and the transcri
 cuts as evidence. This replaces the manual VLC-scrubbing step of a larger post-production
 workflow.
 
-**`video_monitor.py`** — a legacy standalone script that watches a capture share and copies
-finished recordings off it. Still in use, not yet migrated, and it has known defects (an unbounded
-hang when a file stalls below the minimum size, and single-file blocking that stops the whole
-queue). Its `config.json` schema is **unrelated** to vidproc's. Don't conflate the two.
+**`video_monitor.py`** — a standalone script that watches a capture share and copies finished
+recordings off it, to backup and then from backup to processing. Not yet migrated into vidproc,
+stdlib-only, and excluded from ruff. The three ingest defects in spec §5 (unbounded hang on a file
+stalled below minimum size, single-file blocking, completion inferred from a filename) are fixed
+and covered by `tests/test_video_monitor.py`. Its `config.json` schema is **unrelated** to
+vidproc's. Don't conflate the two.
 
 ## Hard constraints
 
@@ -74,7 +76,7 @@ correct and expected, later is a defect.
 
 ```bash
 uv sync                            # set up
-uv run pytest                      # full suite (needs sample/ for 9 of them)
+uv run pytest                      # full suite (needs sample/ for 12 of them)
 uv run pytest -m "not samples"     # suite without real footage — must also pass
 uv run ruff check                  # lint
 uv run vidproc <file> -c cfg.json -w working
@@ -102,6 +104,7 @@ uv run vidproc <file> -c cfg.json -w working
 
 Documented in README under *Known limitations*, plus:
 
-- No external call has a timeout — four subprocess invocations. Fix them in one consistent pass.
+- `video_monitor.py` copies with a blocking `shutil.copy2`. A copy from a share that has gone
+  away mid-read can still hang the monitor until it is restarted.
 - No `test_cli.py`. `cli.main()` itself is still untested end to end; the `opens on:` line it
   prints is covered indirectly by `tests/test_proposal.py`.
