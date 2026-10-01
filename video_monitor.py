@@ -3,7 +3,8 @@
 Video File Monitor and Copy Script
 
 Monitors a network share for new video files being written by ffmpeg,
-waits for them to complete, then copies them to processing and backup locations.
+waits for each to finish, then copies it to the backup location and from there
+to the processing location. No single file can hold up the others.
 """
 
 import os
@@ -12,7 +13,8 @@ import time
 import shutil
 import json
 from pathlib import Path
-from typing import Set, Optional, Dict, Any
+from dataclasses import dataclass
+from typing import Set, Optional, Dict, Any, Callable
 import logging
 
 # Configure logging
@@ -130,181 +132,172 @@ def get_files_in_directory(directory: str, pattern: str = "*") -> Set[str]:
         return set()
 
 
-def find_new_files(source_dir: str, processing_dir: str, pattern: str) -> Set[str]:
+WATCHING = "watching"
+DONE = "done"
+FAILED = "failed"
+
+
+class DestinationConflict(Exception):
+    """A file of the same name but a different size is already at the destination."""
+
+
+@dataclass
+class _Watch:
+    size: int
+    changed_at: float
+    status: str
+
+
+def copy_verified(source_file: Path, dest_dir: Path, expected_size: int) -> Path:
     """
-    Compare files in source directory to processing directory to find new files.
+    Copy a file into dest_dir so that a partial copy can never pass for a finished one.
 
-    Args:
-        source_dir: Source directory to check for new files
-        processing_dir: Processing directory to compare against
-        pattern: File pattern to match
-
-    Returns:
-        Set of filenames that exist in source but not in processing
-    """
-    source_files = get_files_in_directory(source_dir, pattern)
-    processing_files = get_files_in_directory(processing_dir, pattern)
-
-    new_files = source_files - processing_files
-
-    if new_files:
-        logger.info(f"Found {len(new_files)} new file(s): {', '.join(new_files)}")
-
-    return new_files
-
-
-def wait_for_stable_file_size(
-    file_path: str,
-    stability_period_sec: int = 15,
-    check_interval_sec: int = 5,
-    min_file_size_mb: float = 10
-) -> bool:
-    """
-    Waits until the file size has not changed for a certain period AND meets minimum size.
-
-    Args:
-        file_path: The full path to the file to monitor
-        stability_period_sec: How long the file size must remain stable (seconds)
-        check_interval_sec: How often to check the file size (seconds)
-        min_file_size_mb: Minimum file size in MB (file must be larger than this)
-
-    Returns:
-        True if the file became stable and meets minimum size, False if file not found or error
-    """
-    if not os.path.exists(file_path):
-        logger.error(f"File not found: {file_path}")
-        return False
-
-    min_file_size_bytes = min_file_size_mb * 1024 * 1024
-    last_size = None
-    first_stable_time = None
-
-    logger.info(f"Monitoring file stability: {file_path}")
-    logger.info(f"Requirements: stable for {stability_period_sec}s AND size > {min_file_size_mb} MB")
-
-    while True:
-        try:
-            current_size = os.path.getsize(file_path)
-        except OSError as e:
-            logger.error(f"Error accessing file: {e}. Retrying in {check_interval_sec} seconds...")
-            time.sleep(check_interval_sec)
-            continue
-
-        current_size_mb = current_size / (1024 * 1024)
-
-        # Check if file meets minimum size requirement
-        if current_size < min_file_size_bytes:
-            logger.info(f"File too small: {current_size_mb:.2f} MB (min: {min_file_size_mb} MB). Waiting...")
-            first_stable_time = None  # Reset stability timer
-            last_size = current_size
-            time.sleep(check_interval_sec)
-            continue
-
-        # File meets minimum size, now check stability (comparing bytes, not MB)
-        if last_size is not None and current_size == last_size:
-            # Size hasn't changed
-            if first_stable_time is None:
-                # First time seeing this stable size
-                first_stable_time = time.time()
-                logger.info(f"File size stable at {current_size_mb:.2f} MB ({current_size:,} bytes). Starting stability timer...")
-            else:
-                # Calculate how long it's been stable
-                elapsed = time.time() - first_stable_time
-                logger.info(f"File stable for {elapsed:.0f}/{stability_period_sec}s at {current_size_mb:.2f} MB ({current_size:,} bytes)")
-
-                # Both conditions met: stable for required period AND meets minimum size
-                if elapsed >= stability_period_sec:
-                    logger.info(f"File ready: stable for {stability_period_sec}s and size is {current_size_mb:.2f} MB ({current_size:,} bytes)")
-                    return True
-        else:
-            # Size changed - reset stability tracking
-            if last_size is not None:
-                logger.info(f"File size changed: {last_size:,} -> {current_size:,} bytes ({current_size_mb:.2f} MB)")
-            first_stable_time = None
-
-        last_size = current_size
-        time.sleep(check_interval_sec)
-
-
-def copy_file_to_locations(
-    source_file: str,
-    destinations: list
-) -> bool:
-    """
-    Copy a file to multiple destination directories.
+    The copy is written under a temporary name, its size checked against
+    expected_size, and only then renamed into place. A destination that already
+    holds the file at the expected size counts as done; one that holds it at a
+    different size is never overwritten.
 
     Args:
         source_file: Full path to the source file
-        destinations: List of destination directory paths
+        dest_dir: Destination directory
+        expected_size: Size in bytes the finished copy must have
 
     Returns:
-        True if all copies succeeded, False otherwise
-    """
-    filename = os.path.basename(source_file)
-    all_successful = True
+        Path of the finished copy
 
-    for dest_dir in destinations:
+    Raises:
+        DestinationConflict: The destination holds a different file of the same name
+        OSError: The copy failed or came out the wrong size; nothing is left behind
+    """
+    dest = dest_dir / source_file.name
+    if dest.exists():
+        existing = dest.stat().st_size
+        if existing == expected_size:
+            return dest
+        raise DestinationConflict(
+            f"{dest} already exists at {existing:,} bytes, expected {expected_size:,}"
+        )
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    part = dest_dir / (source_file.name + ".part")
+    logger.info(f"Copying {source_file} -> {dest}")
+    try:
+        shutil.copy2(str(source_file), str(part))
+        copied = part.stat().st_size
+        if copied != expected_size:
+            raise OSError(f"copy is {copied:,} bytes, expected {expected_size:,}")
+        os.replace(str(part), str(dest))
+    except BaseException:
+        # Includes Ctrl-C: a half-written .part must never be left to be mistaken
+        # for anything.
+        if part.exists():
+            part.unlink()
+        raise
+    return dest
+
+
+class Monitor:
+    """
+    Watches the share and copies each finished recording to backup, then processing.
+
+    Every call to tick() looks at every file once and returns; nothing waits on
+    a single file. A file is finished once its size has not changed for
+    stability_period_sec. A finished file below min_file_size is marked failed
+    rather than waited on forever, and is picked back up if it starts growing.
+
+    The share is read once per file: the processing copy is taken from the
+    verified backup copy.
+    """
+
+    def __init__(self, config: Dict[str, Any], clock: Callable[[], float] = time.monotonic):
+        self._source = Path(config["imageSource"])
+        self._backup = Path(config["backupLocation"])
+        self._processing = Path(config["processingLocation"])
+        self._pattern = config["file_pattern"]
+        self._stability_s = float(config["stability_period_sec"])
+        self._min_bytes = float(config["min_file_size"]) * 1024 * 1024
+        self._clock = clock
+        self._files: Dict[str, _Watch] = {}
+
+    def status(self, file_name: str) -> Optional[str]:
+        watch = self._files.get(file_name)
+        return watch.status if watch else None
+
+    @property
+    def pending(self) -> bool:
+        return any(w.status == WATCHING for w in self._files.values())
+
+    def tick(self) -> None:
+        names = get_files_in_directory(str(self._source), self._pattern)
+        for gone in sorted(set(self._files) - names):
+            logger.warning(f"No longer on the share, stopped watching: {gone}")
+            del self._files[gone]
+        for name in sorted(names):
+            try:
+                self._observe(name)
+            except Exception as e:
+                # One bad file must never take the others down with it.
+                logger.error(f"Unexpected error handling {name}: {e}")
+
+    def _already_copied(self, name: str, size: int) -> bool:
+        for dest_dir in (self._backup, self._processing):
+            dest = dest_dir / name
+            if not dest.exists() or dest.stat().st_size != size:
+                return False
+        return True
+
+    def _observe(self, name: str) -> None:
         try:
-            # Ensure destination directory exists
-            Path(dest_dir).mkdir(parents=True, exist_ok=True)
+            size = (self._source / name).stat().st_size
+        except OSError as e:
+            logger.warning(f"Cannot read size of {name}, will retry: {e}")
+            return
+        now = self._clock()
+        watch = self._files.get(name)
 
-            dest_path = os.path.join(dest_dir, filename)
-            logger.info(f"Copying to: {dest_path}")
+        if watch is None:
+            if self._already_copied(name, size):
+                logger.info(f"Already copied: {name}")
+                self._files[name] = _Watch(size, now, DONE)
+            else:
+                logger.info(f"New file: {name} ({size / (1024 * 1024):.2f} MB)")
+                self._files[name] = _Watch(size, now, WATCHING)
+            return
 
-            shutil.copy2(source_file, dest_path)
-            logger.info(f"Successfully copied to: {dest_path}")
+        if size != watch.size:
+            if watch.status != WATCHING:
+                logger.info(f"{name} changed size after being marked {watch.status}; watching again")
+            else:
+                logger.info(f"{name} size changed: {watch.size:,} -> {size:,} bytes")
+            watch.size, watch.changed_at, watch.status = size, now, WATCHING
+            return
 
+        if watch.status != WATCHING or now - watch.changed_at < self._stability_s:
+            return
+
+        if size < self._min_bytes:
+            logger.error(
+                f"FAILED: {name} stopped at {size / (1024 * 1024):.2f} MB, below the "
+                f"{self._min_bytes / (1024 * 1024):g} MB minimum. Not copied. "
+                f"It will be picked back up if it starts growing again."
+            )
+            watch.status = FAILED
+            return
+
+        watch.status = self._copy(name, size)
+
+    def _copy(self, name: str, size: int) -> str:
+        try:
+            backup_copy = copy_verified(self._source / name, self._backup, size)
+            copy_verified(backup_copy, self._processing, size)
+        except DestinationConflict as e:
+            logger.error(f"FAILED: {e}. Not overwriting; this needs a person to decide.")
+            return FAILED
         except Exception as e:
-            logger.error(f"Failed to copy to {dest_dir}: {e}")
-            all_successful = False
-
-    return all_successful
-
-
-def process_file(file_name: str, config: dict) -> bool:
-    """
-    Process a single file: wait for completion and copy to destinations.
-
-    Args:
-        file_name: Name of the file to process
-        config: Configuration dictionary
-
-    Returns:
-        True if processing succeeded, False otherwise
-    """
-    source_path = os.path.join(config["imageSource"], file_name)
-
-    logger.info(f"=" * 60)
-    logger.info(f"Processing file: {file_name}")
-    logger.info(f"=" * 60)
-
-    # Wait for file to be complete (stable and meets minimum size)
-    if not wait_for_stable_file_size(
-        source_path,
-        config["stability_period_sec"],
-        config["check_interval_sec"],
-        config["min_file_size"]
-    ):
-        logger.error(f"Failed to verify file stability: {file_name}")
-        return False
-
-    # Copy to both locations
-    destinations = [
-        config["processingLocation"],
-        config["backupLocation"]
-    ]
-
-    success = copy_file_to_locations(
-        source_path,
-        destinations
-    )
-
-    if success:
-        logger.info(f"Successfully processed: {file_name}")
-    else:
-        logger.error(f"Processing completed with errors: {file_name}")
-
-    return success
+            logger.error(f"Copy of {name} failed, will retry: {e}")
+            return WATCHING
+        logger.info(f"Done: {name} ({size:,} bytes) in backup and processing")
+        return DONE
 
 
 def main():
@@ -326,24 +319,15 @@ def main():
     for dir_key in ["processingLocation", "backupLocation"]:
         Path(config[dir_key]).mkdir(parents=True, exist_ok=True)
 
+    monitor = Monitor(config)
     while True:
         try:
-            # Find new files that haven't been processed yet
-            new_files = find_new_files(
-                config["imageSource"],
-                config["processingLocation"],
-                config["file_pattern"]
-            )
-
-            # Process each new file
-            for file_name in new_files:
-                process_file(file_name, config)
-
-            # Wait before next scan
-            if not new_files:
-                logger.debug(f"No new files found. Waiting {config['scan_interval_sec']} seconds...")
-
-            time.sleep(config["scan_interval_sec"])
+            monitor.tick()
+            # Poll faster while something is on its way to being finished.
+            if monitor.pending:
+                time.sleep(config["check_interval_sec"])
+            else:
+                time.sleep(config["scan_interval_sec"])
 
         except KeyboardInterrupt:
             logger.info("Monitoring stopped by user")
