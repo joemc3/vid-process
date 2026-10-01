@@ -81,15 +81,37 @@ class RefinerConfig:
         raise ConfigError(f"no base URL for refiner mode {self.mode!r}")
 
 
+def _require_positive(section: object, *names: str) -> None:
+    for name in names:
+        if getattr(section, name) <= 0.0:
+            raise ConfigError(f"{name} must be positive: {getattr(section, name)}")
+
+
+@dataclass(frozen=True)
+class MediaConfig:
+    # Bounds on ffprobe and the full-file audio decode. Measured on a 56-minute
+    # session: 0.4s and 2s. The headroom is for slow disks and network shares;
+    # the point is that a stall becomes an error rather than a hang.
+    probe_timeout_s: float = 60.0
+    decode_timeout_s: float = 600.0
+
+    def validate(self) -> None:
+        _require_positive(self, "probe_timeout_s", "decode_timeout_s")
+
+
 @dataclass(frozen=True)
 class AsrConfig:
     binary: str = "whisper-cli"
     model_path: str = ""
     language: str = "en"
+    # Per external call: window extraction and whisper-cli each. large-v3 on a
+    # 180s window measured 4s warm, ~35s cold.
+    timeout_s: float = 300.0
 
     def validate(self) -> None:
         if not self.binary:
             raise ConfigError("asr.binary must not be empty")
+        _require_positive(self, "timeout_s")
 
 
 @dataclass(frozen=True)
@@ -98,11 +120,13 @@ class Config:
     detection: DetectionConfig = DetectionConfig()
     refiner: RefinerConfig = RefinerConfig()
     asr: AsrConfig = AsrConfig()
+    media: MediaConfig = MediaConfig()
 
     def validate(self) -> None:
         self.detection.validate()
         self.refiner.validate()
         self.asr.validate()
+        self.media.validate()
 
 
 def _merge(base: Any, overrides: dict[str, Any], label: str) -> Any:
@@ -132,6 +156,7 @@ def load_config(path: Path | None, working_dir: Path) -> Config:
         detection=_merge(DetectionConfig(), raw.get("detection", {}), "detection"),
         refiner=_merge(RefinerConfig(), raw.get("refiner", {}), "refiner"),
         asr=_merge(AsrConfig(), raw.get("asr", {}), "asr"),
+        media=_merge(MediaConfig(), raw.get("media", {}), "media"),
     )
     try:
         cfg.validate()

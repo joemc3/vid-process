@@ -40,6 +40,7 @@ def extract_pcm(
     dest: Path,
     sample_rate: int = ENVELOPE_SAMPLE_RATE,
     ffmpeg: str = "ffmpeg",
+    timeout_s: float = 600.0,
 ) -> Path:
     """Decode the audio track to mono signed-16 PCM at sample_rate."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -53,10 +54,15 @@ def extract_pcm(
         "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", str(tmp),
     ]
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout_s)
     except FileNotFoundError as exc:
         tmp.unlink(missing_ok=True)
         raise ExternalToolError(f"{ffmpeg} not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        tmp.unlink(missing_ok=True)
+        raise ExternalToolError(
+            f"audio extraction timed out after {timeout_s:g}s for {src}"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         tmp.unlink(missing_ok=True)
         raise ExternalToolError(f"audio extraction failed for {src}: {exc.stderr.strip()}") from exc
@@ -113,10 +119,11 @@ def envelope_for(
     sample_rate: int = ENVELOPE_SAMPLE_RATE,
     hop_s: float = ENVELOPE_HOP_S,
     ffmpeg: str = "ffmpeg",
+    timeout_s: float = 600.0,
 ) -> Envelope:
     """Envelope for a media file, caching the intermediate PCM."""
     media = Path(media)
     pcm = Path(cache_dir) / f"{_cache_key(media)}.pcm"
     if not pcm.exists():
-        extract_pcm(media, pcm, sample_rate=sample_rate, ffmpeg=ffmpeg)
+        extract_pcm(media, pcm, sample_rate=sample_rate, ffmpeg=ffmpeg, timeout_s=timeout_s)
     return envelope_from_pcm(pcm, sample_rate=sample_rate, hop_s=hop_s)

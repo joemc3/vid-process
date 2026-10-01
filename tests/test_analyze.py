@@ -181,3 +181,34 @@ def test_a_silent_file_is_never_transcribed(tmp_path, fake_probe, monkeypatch) -
     asr = FakeASR([])
     analyze(tmp_path / "silent.mp4", make_config(tmp_path), asr=asr, refiner=FakeRefiner(0.0))
     assert asr.calls == []
+
+
+def test_configured_timeouts_reach_the_external_calls(tmp_path, monkeypatch) -> None:
+    """The defaults in probe() and envelope_for() would mask a wiring slip, so
+    use values no default could match."""
+    from fractions import Fraction
+
+    from vidproc.config import MediaConfig
+    from vidproc.probe import MediaInfo
+
+    seen: dict[str, float] = {}
+
+    def fake_probe(p, **k):
+        seen["probe"] = k["timeout_s"]
+        return MediaInfo(
+            path=p, duration_s=60.0, width=1920, height=1080, fps=Fraction(16, 1),
+            video_codec="h264", audio_sample_rate=44100, audio_channels=2,
+        )
+
+    def fake_envelope_for(*a, **k):
+        seen["decode"] = k["timeout_s"]
+        return Envelope(db=np.full(240, 8.0), hop_s=0.25)
+
+    monkeypatch.setattr("vidproc.analyze.probe", fake_probe)
+    monkeypatch.setattr("vidproc.analyze.envelope_for", fake_envelope_for)
+    cfg = Config(
+        working_dir=tmp_path,
+        media=MediaConfig(probe_timeout_s=7.5, decode_timeout_s=42.5),
+    )
+    analyze(tmp_path / "s.mp4", cfg, asr=FakeASR([]), refiner=FakeRefiner(0.0))
+    assert seen == {"probe": 7.5, "decode": 42.5}

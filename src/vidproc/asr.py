@@ -146,9 +146,15 @@ class WhisperCppASR:
             "-vn", "-ac", "1", "-ar", "16000", str(wav),
         ]
         try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(
+                cmd, capture_output=True, text=True, check=True, timeout=self._cfg.timeout_s
+            )
         except FileNotFoundError as exc:
             raise ExternalToolError(f"{self._ffmpeg} not found on PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ExternalToolError(
+                f"window extraction timed out after {self._cfg.timeout_s:g}s"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             raise ExternalToolError(f"window extraction failed: {exc.stderr.strip()}") from exc
 
@@ -165,8 +171,14 @@ class WhisperCppASR:
             "--no-prints",
         ]
         try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(
+                cmd, capture_output=True, text=True, check=True, timeout=self._cfg.timeout_s
+            )
         except FileNotFoundError as exc:
             raise ExternalToolError(f"{self._cfg.binary} not found on PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ExternalToolError(
+                f"whisper-cli timed out after {self._cfg.timeout_s:g}s"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             raise ExternalToolError(f"whisper-cli failed: {exc.stderr.strip()}") from exc

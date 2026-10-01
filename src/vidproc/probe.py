@@ -55,7 +55,7 @@ def parse_probe_json(payload: dict[str, Any], path: Path) -> MediaInfo:
         raise ExternalToolError(f"unusable stream properties in {path}: {exc}") from exc
 
 
-def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
+def probe(path: Path, ffprobe: str = "ffprobe", timeout_s: float = 60.0) -> MediaInfo:
     path = Path(path)
     cmd = [
         ffprobe, "-v", "error",
@@ -64,9 +64,13 @@ def probe(path: Path, ffprobe: str = "ffprobe") -> MediaInfo:
         "-of", "json", str(path),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=timeout_s
+        )
     except FileNotFoundError as exc:
         raise ExternalToolError(f"{ffprobe} not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ExternalToolError(f"ffprobe timed out after {timeout_s:g}s on {path}") from exc
     except subprocess.CalledProcessError as exc:
         raise ExternalToolError(f"ffprobe failed on {path}: {exc.stderr.strip()}") from exc
 

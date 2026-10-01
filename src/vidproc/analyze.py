@@ -30,8 +30,8 @@ def analyze(
     asr = asr if asr is not None else WhisperCppASR(cfg.asr)
     refiner = refiner if refiner is not None else build_refiner(cfg.refiner)
 
-    info = probe(media)
-    env = envelope_for(media, cfg.working_dir / "cache")
+    info = probe(media, timeout_s=cfg.media.probe_timeout_s)
+    env = envelope_for(media, cfg.working_dir / "cache", timeout_s=cfg.media.decode_timeout_s)
     bounds = detect_boundaries(env, cfg.detection)
 
     d = cfg.detection
