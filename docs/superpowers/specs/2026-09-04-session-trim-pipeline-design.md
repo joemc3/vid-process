@@ -88,7 +88,7 @@ Consistent across all three raws:
 - Video bitrate ~98 kbps, audio AAC-LC 44.1 kHz stereo ~130 kbps, total ~235 kbps
 - Video stream `start_time` 0.125s, audio `start_time` 0.0s — a 125 ms A/V offset present in source
 
-The 16 fps figure is important and is addressed in §7.
+The 16 fps figure matters for analysis: every source property is probed, never assumed. The render output rate is set deliberately by the operator (§7).
 
 ### 3.2 Audio characteristics
 
@@ -360,7 +360,7 @@ and every proposal-versus-decision pair is logged so they can be re-fitted from 
 
 ## 7. Render (step 6)
 
-Current command, from the operational doc:
+The render command is the operator's, from the *Poster Theater Recording Setup* runbook:
 
 ```
 ffmpeg -y -i ./raw/AAO2025PT14.mp4 -r 29.850746 -ss 157 -to 3110 \
@@ -369,39 +369,13 @@ ffmpeg -y -i ./raw/AAO2025PT14.mp4 -r 29.850746 -ss 157 -to 3110 \
   -movflags faststart -c:a aac -b:a 80k -pass 1 -strict -2 ./processed/AAO2025PT14.mp4
 ```
 
-Four defects, all verified empirically:
+The render stage substitutes only the input, the output, `-ss` and `-to`. Every other argument is
+the operator's decision and stays as written. In particular, the 29.850746 fps output rate is
+deliberate. It is not an error caused by the 16 fps source, so do not remove or "correct" `-r`.
+Any change to the command is the operator's call. Never make one as part of an implementation.
 
-1. **`-r 29.850746` upsamples a 16 fps source.** All three raws are 16 fps. This duplicates frames to
-   inflate the output to 29.85 fps. Measured on a 300-second excerpt: 8,955 frames and 7.31 MB with
-   the current command, versus 4,800 frames and 6.13 MB without it — 87% more frames encoded for a
-   19% larger file, at `-preset slower`, for no visual benefit. Remove it and let the source rate
-   pass through.
-2. **`-pass 1` is meaningless alongside `-crf`** — CRF is single-pass, no second pass ever runs. It
-   also writes `ffmpeg2pass-0.log` and a ~34 MB `ffmpeg2pass-0.log.mbtree` into the current working
-   directory on every run. Remove, along with `-strict -2`.
-3. **`-profile:v high422` is silently overridden.** With `format=yuv420p` in the chain, x264 reports
-   `profile High, level 3.1, 4:2:0, 8-bit` and ffprobe confirms `profile=High` in the output. Harmless
-   but misleading; had it taken effect it would have produced 4:2:2 output that breaks hardware
-   decoders and HLS clients. Remove.
-4. **`-ss` after `-i` forces output seeking**, decoding everything before the start point. Input
-   seeking is frame-accurate in current ffmpeg — verified byte-identical durations both ways — so
-   moving `-ss` and `-to` before `-i` is a free saving.
-
-Corrected form:
-
-```
-ffmpeg -y -ss <start> -to <end> -i <raw> \
-  -vf "scale=-2:'min(720,ih)',format=yuv420p" \
-  -c:v libx264 -preset slower -crf 22 -level 3.1 -movflags +faststart \
-  -c:a aac -b:a 80k <output>
-```
-
-`-to` is absolute on the input timeline when paired with `-ss` — verified — so existing `-ss`/`-to`
-arithmetic carries over unchanged. `scale=-2:'min(720,ih)'` reproduces the existing behaviour
-(1920×1080 → 1280×720) while guaranteeing an even width.
-
-Audio fade-out per §6.2 is added as an `afade` filter. A matching fade-in at the head is available but
-defaults off, pending operator preference.
+An audio fade-out per §6.2 (an `afade` filter) is only a proposal. It goes into the command only if
+the operator approves it. The same applies to a fade-in at the head.
 
 Rendering is deterministic given a decision JSON, so a re-render after an adjusted cut point is a
 single idempotent command.
@@ -480,8 +454,8 @@ single capture rig.
    exposure, but if a future capture has a genuinely noisy floor the floor+8 dB offset may need
    revisiting.
 2. **No applause.** Zero occurrences in three sessions. §6.3 is a deliberate omission, not an oversight.
-3. **16 fps.** Constant across three raws. If a room is rigged differently the render must follow the
-   source rate rather than assume 16.
+3. **16 fps.** Constant across three raws. If a room is rigged differently, analysis must probe the
+   new rate rather than assume 16. The render output rate is the operator's fixed `-r` (§7).
 4. **`parakeet-mlx` is not yet installed** and its accuracy on this audio is unverified. The ASR
    interface exists so that whisper.cpp with `--vad` remains a working fallback.
 9. **Local refinement quality is unverified.** Whether a local model handles the PT01 judgment

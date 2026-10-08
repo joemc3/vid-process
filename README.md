@@ -157,29 +157,20 @@ trust it.
 
 ## Rendering the trimmed file
 
-Take the `-ss` / `-to` pair from the output:
+Take the `-ss` / `-to` pair from the output and put it into the render command from the
+*Poster Theater Recording Setup* runbook in the vault:
 
 ```bash
-ffmpeg -y -ss 288.50 -to 3186.75 -i raw/AAO2026PT01.mp4 \
-  -vf "scale=-2:'min(720,ih)',format=yuv420p" \
-  -c:v libx264 -preset slower -crf 22 -level 3.1 -movflags +faststart \
-  -c:a aac -b:a 80k processed/AAO2026PT01.mp4
+ffmpeg -y -i ./raw/AAO2026PT01.mp4 -r 29.850746 -ss 288.50 -to 3186.75 \
+  -vf "scale=trunc(oh*a/2)*2:'min(720,ih)',format=yuv420p" \
+  -c:v libx264 -preset slower -crf 22 -profile:v high422 -level 3.1 \
+  -movflags faststart -c:a aac -b:a 80k -pass 1 -strict -2 ./processed/AAO2026PT01.mp4
 ```
 
-Then check the result in VLC — the first few seconds, the last few seconds, and a spot in the
-middle — before it goes anywhere.
+The output frame rate of 29.850746 is deliberate. Do not remove or change `-r`.
 
-This differs from the command used in 2025, in four ways that all matter:
-
-- **No `-r`.** These captures are 16 fps. The old command forced 29.850746 fps, duplicating frames
-  to inflate a 16 fps source: 87% more frames encoded for a 19% larger file, and no visual
-  difference. Let the source rate pass through.
-- **No `-pass 1`.** It does nothing alongside `-crf`, and it writes a ~34 MB
-  `ffmpeg2pass-0.log.mbtree` into whatever directory you ran from.
-- **No `-profile:v high422`.** It was silently overridden anyway — the output was already
-  High/4:2:0.
-- **`-ss` and `-to` go before `-i`.** Still frame-accurate, and it skips decoding the part you are
-  cutting away.
+Then check the result in VLC: the first few seconds, the last few seconds, and a spot in the
+middle. Do that before the file goes anywhere.
 
 ## Configuration
 

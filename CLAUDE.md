@@ -33,9 +33,9 @@ These are not style preferences. Violating them causes real harm.
 - **Remote LLM access goes through OpenRouter only**, never a provider API directly.
 - **A model listed by `ollama list` with a `:cloud` suffix is not local** — it runs on Ollama's
   servers. Never treat one as satisfying "nothing leaves the machine".
-- **Never assume a source property — probe it.** These captures are 16 fps, which is unusual. A
-  hand-written pipeline previously assumed 29.97 and silently inflated every output by 87% more
-  frames.
+- **Never assume a source property — probe it.** These captures are 16 fps, which is unusual.
+- **Never change the operator's ffmpeg render command.** It comes from the vault runbook. The output
+  `-r 29.850746` is deliberate, not a bug caused by the 16 fps source. Propose changes; never make them.
 
 ## Architecture
 
