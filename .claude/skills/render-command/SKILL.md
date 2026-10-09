@@ -7,7 +7,7 @@ description: Turn a session ID plus hand-found start and end times (e.g. "PT01, 
 
 During AAO 2026 Joe finds each session's start and end by hand and sends them as
 `<session>, <start>, <end>`, for example `PT01, 200, 30:13`. Build the render command, run it,
-and report back.
+report back, and log it to the vault.
 
 ## Input
 
@@ -46,5 +46,20 @@ the operator's command from the vault runbook *Poster Theater Recording Setup*, 
 5. **Verify when it finishes.** Report the exit status. On failure, show the tail of the output.
    On success, ffprobe the output's duration and compare it to END − START. Say whether it matches
    within about a second, and remind Joe to check the start and end in VLC.
+6. **Log it to the vault.** Only after a successful, matching run, add an entry to
+   `~/Vault/Areas/Digital Acumen/Runbooks/AAO 2026 ffmpeg commands.md`, under `## Sessions` and
+   in PT order, in the same format as the AAO 2025 note (`ffmpeg command.md`):
 
-Keep replies short: conversion, command, "started"; then the result when it finishes.
+   ````
+   PT01
+   In: 200
+   Out: 1813
+   ```
+   <the exact command that ran>
+   ```
+   ````
+
+   If the PT already has an entry (a re-render), replace it rather than adding a second one. Set
+   the note's `modified:` date to today. Don't log test files or failed runs.
+
+Keep replies short: conversion, command, "started"; then the result and "logged" when it finishes.
